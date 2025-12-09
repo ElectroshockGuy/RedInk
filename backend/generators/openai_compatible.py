@@ -225,7 +225,7 @@ class OpenAICompatibleGenerator(ImageGeneratorBase):
         model: str
     ) -> bytes:
         """
-        通过 chat/completions 端点生成图片
+        通过 chat/completions 端点生成图片（默认使用流式传输）
 
         支持多种返回格式：
         1. Markdown 图片链接: ![xxx](url) - 即梦、部分中转站使用
@@ -235,7 +235,7 @@ class OpenAICompatibleGenerator(ImageGeneratorBase):
         # 确保端点以 / 开头
         endpoint = self.endpoint_type if self.endpoint_type.startswith('/') else '/' + self.endpoint_type
         url = f"{self.base_url}{endpoint}"
-        logger.info(f"Chat API 生成图片: {url}, model={model}")
+        logger.info(f"Chat API 流式生成图片: {url}, model={model}")
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -251,10 +251,11 @@ class OpenAICompatibleGenerator(ImageGeneratorBase):
                 }
             ],
             "max_tokens": 4096,
-            "temperature": 1.0
+            "temperature": 1.0,
+            "stream": True
         }
 
-        response = requests.post(url, headers=headers, json=payload, timeout=180)
+        response = requests.post(url, headers=headers, json=payload, timeout=600, stream=True)
 
         if response.status_code != 200:
             error_detail = response.text[:500]
@@ -285,37 +286,113 @@ class OpenAICompatibleGenerator(ImageGeneratorBase):
                     f"【模型】{model}"
                 )
 
-        result = response.json()
-        logger.debug(f"Chat API 响应: {str(result)[:500]}")
+        # 流式读取响应内容
+        content = self._read_stream_response(response)
+        logger.debug(f"Chat API 流式响应完成，内容长度: {len(content)}")
 
-        # 解析响应
-        if "choices" in result and len(result["choices"]) > 0:
-            choice = result["choices"][0]
-            if "message" in choice and "content" in choice["message"]:
-                content = choice["message"]["content"]
+        # 解析内容提取图片
+        return self._extract_image_from_content(content)
 
-                if isinstance(content, str):
-                    # 1. 尝试解析 Markdown 图片链接: ![xxx](url)
-                    image_urls = self._extract_markdown_image_urls(content)
-                    if image_urls:
-                        # 下载第一张图片
-                        logger.info(f"从 Markdown 提取到 {len(image_urls)} 张图片，下载第一张...")
-                        return self._download_image(image_urls[0])
+    def _read_stream_response(self, response) -> str:
+        """读取流式 SSE 响应，支持心跳包"""
+        import json
+        content_parts = []
 
-                    # 2. 尝试解析 Base64 data URL
-                    if content.startswith("data:image"):
-                        logger.info("检测到 Base64 图片数据")
-                        base64_data = content.split(",")[1]
-                        return base64.b64decode(base64_data)
+        for line in response.iter_lines():
+            if not line:
+                continue
 
-                    # 3. 尝试作为纯 URL 处理
-                    if content.startswith("http://") or content.startswith("https://"):
-                        logger.info("检测到图片 URL")
-                        return self._download_image(content.strip())
+            line_str = line.decode('utf-8')
+
+            # SSE 注释行（心跳包等），如 :heart, :ping，跳过但保持连接
+            if line_str.startswith(':'):
+                logger.debug(f"收到心跳: {line_str}")
+                continue
+
+            # 跳过非 data 行
+            if not line_str.startswith('data:'):
+                continue
+
+            data_str = line_str[5:].strip()
+
+            # 检查是否结束
+            if data_str == '[DONE]':
+                break
+
+            try:
+                data = json.loads(data_str)
+                if 'choices' in data and len(data['choices']) > 0:
+                    delta = data['choices'][0].get('delta', {})
+                    if 'content' in delta:
+                        content_parts.append(delta['content'])
+            except json.JSONDecodeError:
+                logger.debug(f"跳过非JSON数据: {data_str[:50]}")
+                continue
+
+        return ''.join(content_parts)
+
+    def _read_normal_response(self, response) -> str:
+        """读取普通 JSON 响应"""
+        import json
+        try:
+            result = response.json()
+            if "choices" in result and len(result["choices"]) > 0:
+                choice = result["choices"][0]
+                # 非流式响应用 message.content
+                if "message" in choice and "content" in choice["message"]:
+                    return choice["message"]["content"]
+                # 有些 API 可能直接放在 content 里
+                if "content" in choice:
+                    return choice["content"]
+            # 返回原始内容让后续处理
+            return json.dumps(result)
+        except Exception as e:
+            logger.warning(f"解析 JSON 响应失败: {e}")
+            return response.text
+
+    def _extract_image_from_content(self, content: str) -> bytes:
+        """从响应内容中提取图片数据"""
+        if not content:
+            raise ValueError(
+                "❌ Chat API 响应为空\n\n"
+                "【可能原因】\n"
+                "1. 该模型不支持图片生成\n"
+                "2. 提示词被安全过滤\n\n"
+                "【解决方案】\n"
+                "1. 确认模型名称正确\n"
+                "2. 修改提示词后重试"
+            )
+
+        # 1. 尝试解析 Markdown 图片链接: ![xxx](url)
+        image_urls = self._extract_markdown_image_urls(content)
+        if image_urls:
+            logger.info(f"从 Markdown 提取到 {len(image_urls)} 张图片，下载第一张...")
+            return self._download_image(image_urls[0])
+
+        # 2. 尝试解析 Base64 data URL
+        if "data:image" in content:
+            logger.info("检测到 Base64 图片数据")
+            import re
+            base64_match = re.search(r'data:image/[^;]+;base64,([A-Za-z0-9+/=]+)', content)
+            if base64_match:
+                return base64.b64decode(base64_match.group(1))
+
+        # 3. 尝试提取纯 URL
+        import re
+        url_match = re.search(r'(https?://[^\s\)\"\'<>]+\.(?:png|jpg|jpeg|gif|webp))', content, re.IGNORECASE)
+        if url_match:
+            logger.info("检测到图片 URL")
+            return self._download_image(url_match.group(1))
+
+        # 4. 尝试提取任意 http URL（兜底）
+        url_match = re.search(r'(https?://[^\s\)\"\'<>]+)', content)
+        if url_match:
+            logger.info("检测到可能的图片 URL，尝试下载...")
+            return self._download_image(url_match.group(1))
 
         raise ValueError(
             "❌ 无法从 Chat API 响应中提取图片数据\n\n"
-            f"【响应内容】\n{str(result)[:500]}\n\n"
+            f"【响应内容】\n{content[:500]}\n\n"
             "【可能原因】\n"
             "1. 该模型不支持图片生成\n"
             "2. 响应格式与预期不符\n"

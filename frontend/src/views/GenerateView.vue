@@ -232,7 +232,9 @@ onMounted(async () => {
     }
   }
 
-  store.startGeneration()
+  // 开始生成并获取唯一请求ID
+  const requestId = store.startGeneration()
+  console.log('[Generate] 启动生成任务，请求ID:', requestId)
 
   generateImagesPost(
     store.outline.pages,
@@ -240,24 +242,41 @@ onMounted(async () => {
     store.outline.raw,  // 传入完整大纲文本
     // onProgress
     (event) => {
+      // 校验请求ID
+      if (!store.isActiveRequest(requestId)) {
+        console.warn('[Generate] 忽略过期请求的进度事件')
+        return
+      }
       console.log('Progress:', event)
     },
     // onComplete
     (event) => {
-      console.log('Complete:', event)
+      // 使用带校验的更新方法
       if (event.image_url) {
-        store.updateProgress(event.index, 'done', event.image_url)
+        const updated = store.updateProgressWithValidation(requestId, event.index, 'done', event.image_url)
+        if (updated) {
+          console.log('Complete:', event)
+        }
       }
     },
     // onError
     (event) => {
-      console.error('Error:', event)
-      store.updateProgress(event.index, 'error', undefined, event.message)
+      // 使用带校验的更新方法
+      const updated = store.updateProgressWithValidation(requestId, event.index, 'error', undefined, event.message)
+      if (updated) {
+        console.error('Error:', event)
+      }
     },
     // onFinish
     async (event) => {
+      // 校验请求ID
+      if (!store.isActiveRequest(requestId)) {
+        console.warn('[Generate] 忽略过期请求的完成事件')
+        return
+      }
+
       console.log('Finish:', event)
-      store.finishGeneration(event.task_id)
+      store.finishGenerationWithValidation(requestId, event.task_id)
 
       // 更新历史记录
       if (store.recordId) {
@@ -297,6 +316,11 @@ onMounted(async () => {
     },
     // onStreamError
     (err) => {
+      // 校验请求ID
+      if (!store.isActiveRequest(requestId)) {
+        console.warn('[Generate] 忽略过期请求的错误')
+        return
+      }
       console.error('Stream Error:', err)
       error.value = '生成失败: ' + err.message
     },

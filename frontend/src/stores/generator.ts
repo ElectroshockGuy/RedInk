@@ -40,6 +40,13 @@ export interface GeneratorState {
 
   // 用户上传的图片（用于图片生成参考）
   userImages: File[]
+
+  // === 任务队列相关 ===
+  // 当前活跃的请求ID（用于校验SSE事件归属）
+  currentRequestId: string | null
+
+  // 队列是否正在处理
+  queueRunning: boolean
 }
 
 const STORAGE_KEY = 'generator-state'
@@ -94,7 +101,10 @@ export const useGeneratorStore = defineStore('generator', {
       images: saved.images || [],
       taskId: saved.taskId || null,
       recordId: saved.recordId || null,
-      userImages: []  // 不从 localStorage 恢复
+      userImages: [],  // 不从 localStorage 恢复
+      // 任务队列相关
+      currentRequestId: null,
+      queueRunning: false
     }
   },
 
@@ -183,8 +193,13 @@ export const useGeneratorStore = defineStore('generator', {
       this.syncRawFromPages()
     },
 
-    // 开始生成
-    startGeneration() {
+    // 开始生成 - 返回唯一请求ID
+    startGeneration(): string {
+      // 生成唯一请求ID
+      const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+      this.currentRequestId = requestId
+      this.queueRunning = true
+
       this.stage = 'generating'
       this.progress.current = 0
       this.progress.total = this.outline.pages.length
@@ -194,6 +209,39 @@ export const useGeneratorStore = defineStore('generator', {
         url: '',
         status: 'generating'
       }))
+
+      return requestId
+    },
+
+    // 验证请求ID是否为当前活跃请求
+    isActiveRequest(requestId: string): boolean {
+      return this.currentRequestId === requestId
+    },
+
+    // 更新进度（带请求ID校验）
+    updateProgressWithValidation(
+      requestId: string,
+      index: number,
+      status: 'generating' | 'done' | 'error',
+      url?: string,
+      error?: string
+    ): boolean {
+      // 校验请求ID
+      if (!this.isActiveRequest(requestId)) {
+        console.warn(`[Generator] 忽略过期请求的事件: ${requestId}, 当前请求: ${this.currentRequestId}`)
+        return false
+      }
+
+      const image = this.images.find(img => img.index === index)
+      if (image) {
+        image.status = status
+        if (url) image.url = url
+        if (error) image.error = error
+      }
+      if (status === 'done') {
+        this.progress.current++
+      }
+      return true
     },
 
     // 更新进度
@@ -219,11 +267,43 @@ export const useGeneratorStore = defineStore('generator', {
       }
     },
 
+    // 更新图片（带请求ID校验）
+    updateImageWithValidation(requestId: string, index: number, newUrl: string): boolean {
+      if (!this.isActiveRequest(requestId)) {
+        console.warn(`[Generator] 忽略过期请求的图片更新: ${requestId}`)
+        return false
+      }
+
+      const image = this.images.find(img => img.index === index)
+      if (image) {
+        const timestamp = Date.now()
+        image.url = `${newUrl}?t=${timestamp}`
+        image.status = 'done'
+        delete image.error
+      }
+      return true
+    },
+
     // 完成生成
     finishGeneration(taskId: string) {
       this.taskId = taskId
       this.stage = 'result'
       this.progress.status = 'done'
+      this.queueRunning = false
+    },
+
+    // 完成生成（带请求ID校验）
+    finishGenerationWithValidation(requestId: string, taskId: string): boolean {
+      if (!this.isActiveRequest(requestId)) {
+        console.warn(`[Generator] 忽略过期请求的完成事件: ${requestId}`)
+        return false
+      }
+
+      this.taskId = taskId
+      this.stage = 'result'
+      this.progress.status = 'done'
+      this.queueRunning = false
+      return true
     },
 
     // 设置单个图片为重试中状态
@@ -269,6 +349,9 @@ export const useGeneratorStore = defineStore('generator', {
       this.taskId = null
       this.recordId = null
       this.userImages = []
+      // 任务队列相关
+      this.currentRequestId = null
+      this.queueRunning = false
       // 清除 localStorage
       localStorage.removeItem(STORAGE_KEY)
     },

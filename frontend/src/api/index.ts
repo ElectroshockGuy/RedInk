@@ -184,6 +184,8 @@ export interface HistoryRecord {
   thumbnail: string | null
   page_count: number
   task_id: string | null
+  archived?: boolean
+  archived_at?: string | null
 }
 
 export interface HistoryDetail {
@@ -221,7 +223,9 @@ export async function createHistory(
 export async function getHistoryList(
   page: number = 1,
   pageSize: number = 20,
-  status?: string
+  status?: string,
+  includeArchived: boolean = true,
+  archivedOnly: boolean = false
 ): Promise<{
   success: boolean
   records: HistoryRecord[]
@@ -230,7 +234,12 @@ export async function getHistoryList(
   page_size: number
   total_pages: number
 }> {
-  const params: any = { page, page_size: pageSize }
+  const params: any = {
+    page,
+    page_size: pageSize,
+    include_archived: includeArchived,
+    archived_only: archivedOnly
+  }
   if (status) params.status = status
 
   const response = await axios.get(`${API_BASE_URL}/history`, { params })
@@ -264,9 +273,29 @@ export async function updateHistory(
 // 删除历史记录
 export async function deleteHistory(recordId: string): Promise<{
   success: boolean
+  action?: 'archived' | 'deleted'
+  message?: string
   error?: string
 }> {
   const response = await axios.delete(`${API_BASE_URL}/history/${recordId}`)
+  return response.data
+}
+
+// 归档历史记录
+export async function archiveHistory(recordId: string): Promise<{
+  success: boolean
+  error?: string
+}> {
+  const response = await axios.post(`${API_BASE_URL}/history/${recordId}/archive`)
+  return response.data
+}
+
+// 取消归档历史记录
+export async function unarchiveHistory(recordId: string): Promise<{
+  success: boolean
+  error?: string
+}> {
+  const response = await axios.post(`${API_BASE_URL}/history/${recordId}/unarchive`)
   return response.data
 }
 
@@ -286,6 +315,7 @@ export async function getHistoryStats(): Promise<{
   success: boolean
   total: number
   by_status: Record<string, number>
+  archived: number
 }> {
   const response = await axios.get(`${API_BASE_URL}/history/stats`)
   return response.data

@@ -51,6 +51,13 @@
         >
           草稿箱
         </div>
+        <div
+          class="tab-item"
+          :class="{ active: currentTab === 'archived' }"
+          @click="switchTab('archived')"
+        >
+          已归档
+        </div>
       </div>
 
       <div class="search-mini">
@@ -85,6 +92,8 @@
         @preview="viewImages"
         @edit="loadRecord"
         @delete="confirmDelete"
+        @archive="handleArchive"
+        @unarchive="handleUnarchive"
       />
     </div>
 
@@ -127,6 +136,8 @@ import {
   getHistoryStats,
   searchHistory,
   deleteHistory,
+  archiveHistory,
+  unarchiveHistory,
   getHistory,
   type HistoryRecord,
   regenerateImage as apiRegenerateImage,
@@ -166,11 +177,21 @@ const isScanning = ref(false)
 async function loadData() {
   loading.value = true
   try {
-    let statusFilter = currentTab.value === 'all' ? undefined : currentTab.value
-    const res = await getHistoryList(currentPage.value, 12, statusFilter)
-    if (res.success) {
-      records.value = res.records
-      totalPages.value = res.total_pages
+    // 归档标签页特殊处理
+    if (currentTab.value === 'archived') {
+      const res = await getHistoryList(currentPage.value, 12, undefined, true, true)
+      if (res.success) {
+        records.value = res.records
+        totalPages.value = res.total_pages
+      }
+    } else {
+      let statusFilter = currentTab.value === 'all' ? undefined : currentTab.value
+      // 非归档标签页默认不显示已归档记录
+      const res = await getHistoryList(currentPage.value, 12, statusFilter, false, false)
+      if (res.success) {
+        records.value = res.records
+        totalPages.value = res.total_pages
+      }
     }
   } catch(e) {
     console.error(e)
@@ -260,13 +281,47 @@ function closeGallery() {
 }
 
 /**
- * 确认删除
+ * 确认删除（可能变成归档）
  */
 async function confirmDelete(record: any) {
   if(confirm('确定删除吗？')) {
-    await deleteHistory(record.id)
+    const result = await deleteHistory(record.id)
+    if (result.success) {
+      // 如果实际执行的是归档操作，提示用户
+      if (result.action === 'archived') {
+        alert(result.message || '记录已归档')
+      }
+      loadData()
+      loadStats()
+    }
+  }
+}
+
+/**
+ * 归档记录
+ */
+async function handleArchive(record: any) {
+  if(confirm('确定归档此记录吗？')) {
+    const result = await archiveHistory(record.id)
+    if (result.success) {
+      loadData()
+      loadStats()
+    } else {
+      alert('归档失败: ' + (result.error || '未知错误'))
+    }
+  }
+}
+
+/**
+ * 取消归档
+ */
+async function handleUnarchive(record: any) {
+  const result = await unarchiveHistory(record.id)
+  if (result.success) {
     loadData()
     loadStats()
+  } else {
+    alert('取消归档失败: ' + (result.error || '未知错误'))
   }
 }
 

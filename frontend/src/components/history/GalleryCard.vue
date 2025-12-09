@@ -1,6 +1,6 @@
 <template>
   <!-- 历史记录卡片 -->
-  <div class="gallery-card">
+  <div class="gallery-card" :class="{ archived: record.archived }">
     <!-- 封面区域 -->
     <div class="card-cover" @click="$emit('preview', record.id)">
       <img
@@ -12,6 +12,16 @@
       />
       <div v-else class="cover-placeholder">
         <span>{{ record.title.charAt(0) }}</span>
+      </div>
+
+      <!-- 归档遮罩 -->
+      <div v-if="record.archived" class="archived-overlay">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="21 8 21 21 3 21 3 8"></polyline>
+          <rect x="1" y="3" width="22" height="5"></rect>
+          <line x1="10" y1="12" x2="14" y2="12"></line>
+        </svg>
+        <span>已归档</span>
       </div>
 
       <!-- 悬浮操作按钮 -->
@@ -39,7 +49,23 @@
         <span>{{ formattedDate }}</span>
 
         <div class="more-actions-wrapper">
-          <button class="more-btn" @click.stop="$emit('delete', record)">
+          <!-- 已归档：显示恢复按钮 -->
+          <button v-if="record.archived" class="more-btn restore-btn" @click.stop="$emit('unarchive', record)" title="恢复">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+              <path d="M3 3v5h5"></path>
+            </svg>
+          </button>
+          <!-- 未归档：显示归档按钮 -->
+          <button v-else class="more-btn archive-btn" @click.stop="$emit('archive', record)" title="归档">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="21 8 21 21 3 21 3 8"></polyline>
+              <rect x="1" y="3" width="22" height="5"></rect>
+              <line x1="10" y1="12" x2="14" y2="12"></line>
+            </svg>
+          </button>
+          <!-- 删除按钮 -->
+          <button class="more-btn" @click.stop="$emit('delete', record)" title="删除">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"></polyline>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -70,6 +96,8 @@ interface Record {
   updated_at: string
   thumbnail?: string
   task_id?: string
+  archived?: boolean
+  archived_at?: string | null
 }
 
 // 定义 Props
@@ -82,6 +110,8 @@ defineEmits<{
   (e: 'preview', id: string): void
   (e: 'edit', id: string): void
   (e: 'delete', record: Record): void
+  (e: 'archive', record: Record): void
+  (e: 'unarchive', record: Record): void
 }>()
 
 /**
@@ -280,5 +310,46 @@ const formattedDate = computed(() => {
 .more-btn:hover {
   background: #fee;
   color: #ff4d4f;
+}
+
+/* 归档按钮 */
+.archive-btn:hover {
+  background: #fff7e6;
+  color: #fa8c16;
+}
+
+/* 恢复按钮 */
+.restore-btn:hover {
+  background: #e6f7ff;
+  color: #1890ff;
+}
+
+/* 归档状态卡片 */
+.gallery-card.archived {
+  opacity: 0.75;
+}
+
+.gallery-card.archived:hover {
+  opacity: 1;
+}
+
+/* 归档遮罩 */
+.archived-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.gallery-card:hover .archived-overlay {
+  opacity: 0;
+  pointer-events: none;
 }
 </style>

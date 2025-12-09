@@ -1,0 +1,16 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: redink-ingress
+  namespace: redink
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`redink.shunleite.com`)
+    kind: Rule
+    services:
+    - name: redink
+      port: 80
+  tls:
+    secretName: redink-tls

@@ -3,6 +3,7 @@
 
 包含功能：
 - 创建/获取/更新/删除历史记录 (CRUD)
+- 归档/取消归档历史记录
 - 搜索历史记录
 - 获取统计信息
 - 扫描和同步任务图片
@@ -15,6 +16,7 @@ import zipfile
 import logging
 from flask import Blueprint, request, jsonify, send_file
 from backend.services.history import get_history_service
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,8 @@ def create_history_blueprint():
         - page: 页码（默认 1）
         - page_size: 每页数量（默认 20）
         - status: 状态过滤（可选：all/completed/draft）
+        - include_archived: 是否包含已归档记录（默认 true）
+        - archived_only: 仅显示已归档记录（默认 false）
 
         返回：
         - success: 是否成功
@@ -86,9 +90,17 @@ def create_history_blueprint():
             page = int(request.args.get('page', 1))
             page_size = int(request.args.get('page_size', 20))
             status = request.args.get('status')
+            include_archived = request.args.get('include_archived', 'true').lower() == 'true'
+            archived_only = request.args.get('archived_only', 'false').lower() == 'true'
 
             history_service = get_history_service()
-            result = history_service.list_records(page, page_size, status)
+            result = history_service.list_records(
+                page,
+                page_size,
+                status,
+                include_archived=include_archived,
+                archived_only=archived_only
+            )
 
             return jsonify({
                 "success": True,
@@ -194,17 +206,76 @@ def create_history_blueprint():
         路径参数：
         - record_id: 记录 ID
 
+        说明：
+        - 如果 ALLOW_DELETE=false（默认），则执行归档操作
+        - 如果 ALLOW_DELETE=true，则执行永久删除
+
         返回：
         - success: 是否成功
+        - action: 执行的操作（archived/deleted）
         """
         try:
             history_service = get_history_service()
+
+            # 检查是否允许删除
+            if not Config.ALLOW_DELETE:
+                # 禁用删除时，执行归档操作
+                success = history_service.archive_record(record_id)
+
+                if not success:
+                    return jsonify({
+                        "success": False,
+                        "error": f"归档历史记录失败：{record_id}\n可能原因：记录不存在或ID错误"
+                    }), 404
+
+                return jsonify({
+                    "success": True,
+                    "action": "archived",
+                    "message": "记录已归档（删除功能已禁用）"
+                }), 200
+
+            # 允许删除时，执行永久删除
             success = history_service.delete_record(record_id)
 
             if not success:
                 return jsonify({
                     "success": False,
                     "error": f"删除历史记录失败：{record_id}\n可能原因：记录不存在或ID错误"
+                }), 404
+
+            return jsonify({
+                "success": True,
+                "action": "deleted"
+            }), 200
+
+        except Exception as e:
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"删除历史记录失败。\n错误详情: {error_msg}"
+            }), 500
+
+    # ==================== 归档操作 ====================
+
+    @history_bp.route('/history/<record_id>/archive', methods=['POST'])
+    def archive_history(record_id):
+        """
+        归档历史记录
+
+        路径参数：
+        - record_id: 记录 ID
+
+        返回：
+        - success: 是否成功
+        """
+        try:
+            history_service = get_history_service()
+            success = history_service.archive_record(record_id)
+
+            if not success:
+                return jsonify({
+                    "success": False,
+                    "error": f"归档历史记录失败：{record_id}\n可能原因：记录不存在或ID错误"
                 }), 404
 
             return jsonify({
@@ -215,7 +286,39 @@ def create_history_blueprint():
             error_msg = str(e)
             return jsonify({
                 "success": False,
-                "error": f"删除历史记录失败。\n错误详情: {error_msg}"
+                "error": f"归档历史记录失败。\n错误详情: {error_msg}"
+            }), 500
+
+    @history_bp.route('/history/<record_id>/unarchive', methods=['POST'])
+    def unarchive_history(record_id):
+        """
+        取消归档历史记录
+
+        路径参数：
+        - record_id: 记录 ID
+
+        返回：
+        - success: 是否成功
+        """
+        try:
+            history_service = get_history_service()
+            success = history_service.unarchive_record(record_id)
+
+            if not success:
+                return jsonify({
+                    "success": False,
+                    "error": f"取消归档失败：{record_id}\n可能原因：记录不存在或ID错误"
+                }), 404
+
+            return jsonify({
+                "success": True
+            }), 200
+
+        except Exception as e:
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"取消归档失败。\n错误详情: {error_msg}"
             }), 500
 
     # ==================== 搜索和统计 ====================

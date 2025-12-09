@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redink
+  namespace: redink
+  labels:
+    app: redink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redink
+  template:
+    metadata:
+      labels:
+        app: redink
+    spec:
+      containers:
+      - name: redink
+        image: ghcr.io/netlops/redink:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 12398
+          name: http
+        env:
+        - name: FLASK_HOST
+          value: "0.0.0.0"
+        - name: FLASK_PORT
+          value: "12398"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/text_providers.yaml
+          subPath: text_providers.yaml
+        - name: config-volume
+          mountPath: /app/image_providers.yaml
+          subPath: image_providers.yaml
+        - name: config-volume
+          mountPath: /app/auth.yaml
+          subPath: auth.yaml
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+      volumes:
+      - name: config-volume
+        secret:
+          secretName: redink-config

@@ -56,6 +56,8 @@ class HistoryService:
                 "generated": []
             },
             "status": "draft",  # draft/generating/completed/partial
+            "archived": False,  # 归档状态
+            "archived_at": None,  # 归档时间
             "thumbnail": None
         }
 
@@ -70,6 +72,8 @@ class HistoryService:
             "created_at": now,
             "updated_at": now,
             "status": "draft",
+            "archived": False,
+            "archived_at": None,
             "thumbnail": None,
             "page_count": len(outline.get("pages", [])),
             "task_id": task_id
@@ -169,15 +173,80 @@ class HistoryService:
 
         return True
 
+    def archive_record(self, record_id: str) -> bool:
+        """归档记录（软删除）"""
+        record = self.get_record(record_id)
+        if not record:
+            return False
+
+        now = datetime.now().isoformat()
+        record["archived"] = True
+        record["archived_at"] = now
+        record["updated_at"] = now
+
+        # 保存记录文件
+        record_path = self._get_record_path(record_id)
+        with open(record_path, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+
+        # 更新索引
+        index = self._load_index()
+        for idx_record in index["records"]:
+            if idx_record["id"] == record_id:
+                idx_record["archived"] = True
+                idx_record["archived_at"] = now
+                idx_record["updated_at"] = now
+                break
+        self._save_index(index)
+
+        return True
+
+    def unarchive_record(self, record_id: str) -> bool:
+        """取消归档"""
+        record = self.get_record(record_id)
+        if not record:
+            return False
+
+        now = datetime.now().isoformat()
+        record["archived"] = False
+        record["archived_at"] = None
+        record["updated_at"] = now
+
+        # 保存记录文件
+        record_path = self._get_record_path(record_id)
+        with open(record_path, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+
+        # 更新索引
+        index = self._load_index()
+        for idx_record in index["records"]:
+            if idx_record["id"] == record_id:
+                idx_record["archived"] = False
+                idx_record["archived_at"] = None
+                idx_record["updated_at"] = now
+                break
+        self._save_index(index)
+
+        return True
+
     def list_records(
         self,
         page: int = 1,
         page_size: int = 20,
-        status: Optional[str] = None
+        status: Optional[str] = None,
+        include_archived: bool = True,
+        archived_only: bool = False
     ) -> Dict:
         index = self._load_index()
         records = index.get("records", [])
 
+        # 归档过滤
+        if archived_only:
+            records = [r for r in records if r.get("archived", False)]
+        elif not include_archived:
+            records = [r for r in records if not r.get("archived", False)]
+
+        # 状态过滤
         if status:
             records = [r for r in records if r.get("status") == status]
 
@@ -212,14 +281,18 @@ class HistoryService:
 
         total = len(records)
         status_count = {}
+        archived_count = 0
 
         for record in records:
             status = record.get("status", "draft")
             status_count[status] = status_count.get(status, 0) + 1
+            if record.get("archived", False):
+                archived_count += 1
 
         return {
             "total": total,
-            "by_status": status_count
+            "by_status": status_count,
+            "archived": archived_count
         }
 
     def scan_and_sync_task_images(self, task_id: str) -> Dict[str, Any]:

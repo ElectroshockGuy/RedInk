@@ -23,6 +23,10 @@ class Config:
     # Token 有效期（秒），默认 7 天
     TOKEN_EXPIRY = int(os.environ.get('TOKEN_EXPIRY', 60 * 60 * 24 * 7))
 
+    # 删除功能配置（默认禁用，只允许归档）
+    # 设置为 true 允许永久删除记录，设置为 false 则删除操作会变成归档
+    ALLOW_DELETE = os.environ.get('ALLOW_DELETE', 'false').lower() == 'true'
+
     _auth_config = None
 
     @classmethod

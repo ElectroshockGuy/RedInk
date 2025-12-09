@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redink
+  namespace: redink
+spec:
+  selector:
+    app: redink
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 12398

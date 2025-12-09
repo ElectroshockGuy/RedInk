@@ -448,3 +448,27 @@ export async function testConnection(config: {
   const response = await axios.post(`${API_BASE_URL}/config/test`, config)
   return response.data
 }
+
+// ==================== 认证相关 API ====================
+
+// 登录
+export async function login(password: string): Promise<{
+  success: boolean
+  token?: string
+  error?: string
+}> {
+  const response = await axios.post(`${API_BASE_URL}/auth/login`, { password })
+  return response.data
+}
+
+// 验证 token
+export async function checkAuth(token: string): Promise<{
+  valid: boolean
+}> {
+  const response = await axios.get(`${API_BASE_URL}/auth/check`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  })
+  return response.data
+}

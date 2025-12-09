@@ -58,6 +58,7 @@ history/*
 .gemini/
 /image_providers.yaml
 /text_providers.yaml
+/auth.yaml
 
 # Logs
 *.log

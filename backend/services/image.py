@@ -117,6 +117,7 @@ class ImageService:
         self,
         page: Dict,
         task_id: str,
+        task_dir: str,
         reference_image: Optional[bytes] = None,
         retry_count: int = 0,
         full_outline: str = "",
@@ -129,6 +130,7 @@ class ImageService:
         Args:
             page: 页面数据
             task_id: 任务ID
+            task_dir: 任务目录（用于保存图片，确保线程安全）
             reference_image: 参考图片（封面图）
             retry_count: 当前重试次数
             full_outline: 完整的大纲文本
@@ -201,9 +203,9 @@ class ImageService:
                         quality=self.provider_config.get('quality', 'standard'),
                     )
 
-                # 保存图片（使用当前任务目录）
+                # 保存图片（使用传入的任务目录，确保线程安全）
                 filename = f"{index}.png"
-                self._save_image(image_data, filename, self.current_task_dir)
+                self._save_image(image_data, filename, task_dir)
                 logger.info(f"✅ 图片 [{index}] 生成成功: {filename}")
 
                 return (index, True, filename, None)
@@ -251,10 +253,10 @@ class ImageService:
 
         logger.info(f"开始图片生成任务: task_id={task_id}, pages={len(pages)}")
 
-        # 创建任务专属目录
-        self.current_task_dir = os.path.join(self.history_root_dir, task_id)
-        os.makedirs(self.current_task_dir, exist_ok=True)
-        logger.debug(f"任务目录: {self.current_task_dir}")
+        # 创建任务专属目录（使用局部变量，避免多任务并发时的竞态条件）
+        task_dir = os.path.join(self.history_root_dir, task_id)
+        os.makedirs(task_dir, exist_ok=True)
+        logger.debug(f"任务目录: {task_dir}")
 
         total = len(pages)
         generated_images = []
@@ -308,7 +310,7 @@ class ImageService:
 
             # 生成封面（使用用户上传的图片作为参考）
             index, success, filename, error = self._generate_single_image(
-                cover_page, task_id, reference_image=None, full_outline=full_outline,
+                cover_page, task_id, task_dir, reference_image=None, full_outline=full_outline,
                 user_images=compressed_user_images, user_topic=user_topic
             )
 
@@ -317,7 +319,7 @@ class ImageService:
                 self._task_states[task_id]["generated"][index] = filename
 
                 # 读取封面图片作为参考，并立即压缩到200KB以内
-                cover_path = os.path.join(self.current_task_dir, filename)
+                cover_path = os.path.join(task_dir, filename)
                 with open(cover_path, "rb") as f:
                     cover_image_data = f.read()
 
@@ -369,12 +371,13 @@ class ImageService:
 
                 # 使用线程池并发生成
                 with ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT) as executor:
-                    # 提交所有任务
+                    # 提交所有任务（使用函数开头定义的 task_dir 局部变量，确保线程安全）
                     future_to_page = {
                         executor.submit(
                             self._generate_single_image,
                             page,
                             task_id,
+                            task_dir,  # 使用捕获的任务目录，确保线程安全
                             cover_image_data,  # 使用封面作为参考
                             0,  # retry_count
                             full_outline,  # 传入完整大纲
@@ -476,6 +479,7 @@ class ImageService:
                     index, success, filename, error = self._generate_single_image(
                         page,
                         task_id,
+                        task_dir,
                         cover_image_data,
                         0,
                         full_outline,
@@ -576,6 +580,7 @@ class ImageService:
         index, success, filename, error = self._generate_single_image(
             page,
             task_id,
+            self.current_task_dir,
             reference_image,
             0,
             full_outline,
@@ -617,6 +622,10 @@ class ImageService:
         Yields:
             进度事件
         """
+        # 设置任务目录
+        self.current_task_dir = os.path.join(self.history_root_dir, task_id)
+        os.makedirs(self.current_task_dir, exist_ok=True)
+
         # 获取参考图
         reference_image = None
         if task_id in self._task_states:
@@ -641,11 +650,14 @@ class ImageService:
             full_outline = self._task_states[task_id].get("full_outline", "")
 
         with ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT) as executor:
+            # 在提交时捕获 current_task_dir 的值，确保线程安全
+            task_dir = self.current_task_dir
             future_to_page = {
                 executor.submit(
                     self._generate_single_image,
                     page,
                     task_id,
+                    task_dir,  # 使用捕获的任务目录，确保线程安全
                     reference_image,
                     0,  # retry_count
                     full_outline  # 传入完整大纲

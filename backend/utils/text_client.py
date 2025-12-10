@@ -2,10 +2,13 @@
 import time
 import random
 import base64
+import logging
 import requests
 from functools import wraps
 from typing import List, Optional, Union
 from .image_compressor import compress_image
+
+logger = logging.getLogger(__name__)
 
 
 def retry_on_429(max_retries=3, base_delay=2):
@@ -123,6 +126,7 @@ class TextChatClient:
         Yields:
             生成的文本片段
         """
+        logger.info(f"🔄 OpenAI 兼容 API 流式生成开始: model={model}, endpoint={self.chat_endpoint}")
         messages = []
 
         # 添加系统提示词
@@ -153,6 +157,8 @@ class TextChatClient:
             "Authorization": f"Bearer {self.api_key}"
         }
 
+        logger.debug(f"📤 发送请求到: {self.chat_endpoint}")
+
         response = requests.post(
             self.chat_endpoint,
             json=payload,
@@ -165,24 +171,47 @@ class TextChatClient:
             error_detail = response.text[:500]
             raise Exception(f"API 请求失败 (状态码: {response.status_code}): {error_detail}")
 
-        # 解析 SSE 流
-        for line in response.iter_lines():
-            if line:
-                line = line.decode('utf-8')
+        logger.debug(f"📥 收到响应，开始解析 SSE 流...")
+
+        # 使用 iter_content 替代 iter_lines，更实时
+        import json
+        buffer = ""
+        chunk_count = 0
+
+        for raw_chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+            if not raw_chunk:
+                continue
+
+            buffer += raw_chunk
+
+            # 按行处理
+            while '\n' in buffer:
+                line, buffer = buffer.split('\n', 1)
+                line = line.strip()
+
+                if not line:
+                    continue
+
                 if line.startswith('data: '):
                     data = line[6:]
                     if data == '[DONE]':
-                        break
+                        logger.debug(f"✅ 收到 [DONE] 信号")
+                        return
+
                     try:
-                        import json
-                        chunk = json.loads(data)
-                        if 'choices' in chunk and len(chunk['choices']) > 0:
-                            delta = chunk['choices'][0].get('delta', {})
-                            content = delta.get('content', '')
-                            if content:
-                                yield content
-                    except json.JSONDecodeError:
+                        chunk_data = json.loads(data)
+                        if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
+                            delta = chunk_data['choices'][0].get('delta', {})
+                            text_content = delta.get('content', '')
+                            if text_content:
+                                chunk_count += 1
+                                logger.debug(f"📥 chunk #{chunk_count}: {len(text_content)} 字符")
+                                yield text_content
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON 解析失败: {e}, data: {data[:100]}")
                         continue
+
+        logger.info(f"✅ OpenAI 兼容 API 流式生成完成，共 {chunk_count} 个 chunk")
 
     @retry_on_429(max_retries=3, base_delay=2)
     def generate_text(

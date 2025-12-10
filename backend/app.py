@@ -155,5 +155,6 @@ if __name__ == '__main__':
     app.run(
         host=Config.HOST,
         port=Config.PORT,
-        debug=Config.DEBUG
+        debug=Config.DEBUG,
+        threaded=True  # 启用多线程，支持 SSE 流式响应
     )

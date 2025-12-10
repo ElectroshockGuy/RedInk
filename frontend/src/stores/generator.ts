@@ -47,6 +47,14 @@ export interface GeneratorState {
 
   // 队列是否正在处理
   queueRunning: boolean
+
+  // === 流式生成大纲相关 ===
+  // 是否正在流式生成大纲
+  isStreamingOutline: boolean
+  // 流式生成的临时内容
+  streamingOutlineContent: string
+  // 流式生成的页数参数
+  streamingPageCount: number | null
 }
 
 const STORAGE_KEY = 'generator-state'
@@ -104,7 +112,11 @@ export const useGeneratorStore = defineStore('generator', {
       userImages: [],  // 不从 localStorage 恢复
       // 任务队列相关
       currentRequestId: null,
-      queueRunning: false
+      queueRunning: false,
+      // 流式生成大纲相关
+      isStreamingOutline: false,
+      streamingOutlineContent: '',
+      streamingPageCount: null
     }
   },
 
@@ -119,6 +131,39 @@ export const useGeneratorStore = defineStore('generator', {
       this.outline.raw = raw
       this.outline.pages = pages
       this.stage = 'outline'
+      // 清除流式生成状态
+      this.isStreamingOutline = false
+      this.streamingOutlineContent = ''
+    },
+
+    // 开始流式生成大纲
+    startStreamingOutline(topic: string, pageCount: number | null, userImages: File[]) {
+      this.topic = topic
+      this.streamingPageCount = pageCount
+      this.userImages = userImages
+      this.isStreamingOutline = true
+      this.streamingOutlineContent = ''
+      this.outline = { raw: '', pages: [] }
+      this.recordId = null
+    },
+
+    // 追加流式内容
+    appendStreamingContent(content: string) {
+      this.streamingOutlineContent += content
+    },
+
+    // 完成流式生成大纲
+    finishStreamingOutline(raw: string, pages: Page[]) {
+      this.outline.raw = raw
+      this.outline.pages = pages
+      this.stage = 'outline'
+      this.isStreamingOutline = false
+      this.streamingOutlineContent = ''
+    },
+
+    // 流式生成大纲出错
+    errorStreamingOutline() {
+      this.isStreamingOutline = false
     },
 
     // 更新页面
@@ -352,6 +397,10 @@ export const useGeneratorStore = defineStore('generator', {
       // 任务队列相关
       this.currentRequestId = null
       this.queueRunning = false
+      // 流式生成大纲相关
+      this.isStreamingOutline = false
+      this.streamingOutlineContent = ''
+      this.streamingPageCount = null
       // 清除 localStorage
       localStorage.removeItem(STORAGE_KEY)
     },

@@ -123,15 +123,22 @@ def create_outline_blueprint():
                 full_text = ""
                 last_heartbeat = time.time()
                 heartbeat_interval = 15  # 每 15 秒发送一次心跳
+                chunk_count = 0
 
                 try:
+                    # 发送开始事件，用于测试连接
+                    logger.debug("📤 发送 SSE 开始事件")
+                    yield f"event: start\ndata: {json.dumps({'message': 'streaming started'})}\n\n"
+
                     for chunk in outline_service.generate_outline_stream(
                         topic,
                         images_data,
                         page_count=page_count
                     ):
+                        chunk_count += 1
                         full_text += chunk
                         # 发送文本片段
+                        logger.debug(f"📤 发送 chunk #{chunk_count}: {len(chunk)} 字符")
                         yield f"event: chunk\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
 
                         # 检查是否需要发送心跳
@@ -144,7 +151,7 @@ def create_outline_blueprint():
                     pages = outline_service._parse_outline(full_text)
                     has_images = images_data is not None and len(images_data) > 0
 
-                    logger.info(f"✅ 流式大纲生成完成，共 {len(pages)} 页")
+                    logger.info(f"✅ 流式大纲生成完成，共 {len(pages)} 页，发送了 {chunk_count} 个 chunk")
                     yield f"event: done\ndata: {json.dumps({'outline': full_text, 'pages': pages, 'has_images': has_images}, ensure_ascii=False)}\n\n"
 
                 except Exception as e:
@@ -152,15 +159,21 @@ def create_outline_blueprint():
                     logger.error(f"❌ 流式大纲生成失败: {error_msg}")
                     yield f"event: error\ndata: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
 
-            return Response(
+            response = Response(
                 stream_with_context(generate()),
                 mimetype='text/event-stream',
                 headers={
-                    'Cache-Control': 'no-cache',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0',
                     'Connection': 'keep-alive',
-                    'X-Accel-Buffering': 'no'
+                    'X-Accel-Buffering': 'no',
+                    'Content-Type': 'text/event-stream; charset=utf-8'
                 }
             )
+            # 禁用响应缓冲
+            response.implicit_sequence_conversion = False
+            return response
 
         except Exception as e:
             log_error('/outline/stream', e)

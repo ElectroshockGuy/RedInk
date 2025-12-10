@@ -1,12 +1,15 @@
 """Google GenAI 客户端封装"""
 import time
 import random
+import logging
 from functools import wraps
 from google import genai
 from google.genai import types
 
 # 导入统一的错误解析函数
 from ..generators.google_genai import parse_genai_error
+
+logger = logging.getLogger(__name__)
 
 
 def retry_on_429(max_retries=3, base_delay=2):
@@ -124,6 +127,7 @@ class GenAIClient:
         Yields:
             生成的文本片段
         """
+        logger.debug(f"🔄 GenAI 流式生成开始: model={model}")
         parts = [types.Part(text=prompt)]
 
         if images:
@@ -160,6 +164,7 @@ class GenAIClient:
 
         generate_content_config = types.GenerateContentConfig(**config_kwargs)
 
+        chunk_count = 0
         for chunk in self.client.models.generate_content_stream(
             model=model,
             contents=contents,
@@ -168,7 +173,11 @@ class GenAIClient:
             if not chunk.candidates or not chunk.candidates[0].content or not chunk.candidates[0].content.parts:
                 continue
             if chunk.text:
+                chunk_count += 1
+                logger.debug(f"📥 GenAI chunk #{chunk_count}: {len(chunk.text)} 字符")
                 yield chunk.text
+
+        logger.debug(f"✅ GenAI 流式生成完成，共 {chunk_count} 个 chunk")
 
     @retry_on_429(max_retries=3, base_delay=2)
     def generate_text(

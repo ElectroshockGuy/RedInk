@@ -152,6 +152,10 @@ export function generateOutlineStream(
             const data = JSON.parse(eventData)
 
             switch (eventType) {
+              case 'start':
+                // 连接成功，可以忽略或用于调试
+                console.log('[SSE] 流式生成开始')
+                break
               case 'chunk':
                 callbacks.onChunk?.(data.content)
                 break

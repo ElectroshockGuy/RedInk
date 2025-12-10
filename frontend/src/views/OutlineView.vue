@@ -9,16 +9,34 @@
         <button class="btn btn-secondary" @click="goBack" style="background: white; border: 1px solid var(--border-color);">
           上一步
         </button>
-        <button class="btn btn-primary" @click="startGeneration">
+        <button class="btn btn-primary" @click="startGeneration" :disabled="store.isStreamingOutline">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"></path><line x1="16" y1="8" x2="2" y2="22"></line><line x1="17.5" y1="15" x2="9" y2="15"></line></svg>
           开始生成图片
         </button>
       </div>
     </div>
 
-    <div class="outline-grid">
-      <div 
-        v-for="(page, idx) in store.outline.pages" 
+    <!-- 流式生成中的显示 -->
+    <div v-if="store.isStreamingOutline" class="streaming-container">
+      <div class="streaming-card">
+        <div class="streaming-header">
+          <div class="streaming-indicator">
+            <span class="dot"></span>
+            正在生成大纲...
+          </div>
+          <div class="streaming-topic">{{ store.topic }}</div>
+        </div>
+        <div class="streaming-content" ref="streamingContentRef">
+          <pre v-if="store.streamingOutlineContent">{{ store.streamingOutlineContent }}</pre>
+          <div v-else class="streaming-placeholder">等待 AI 响应中...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 正常的大纲编辑网格 -->
+    <div v-else class="outline-grid">
+      <div
+        v-for="(page, idx) in store.outline.pages"
         :key="page.index"
         class="card outline-card"
         :draggable="true"
@@ -33,7 +51,7 @@
              <span class="page-number">P{{ idx + 1 }}</span>
              <span class="page-type" :class="page.type">{{ getPageTypeName(page.type) }}</span>
           </div>
-          
+
           <div class="card-controls">
             <div class="drag-handle" title="拖拽排序">
                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle></svg>
@@ -50,7 +68,7 @@
           placeholder="在此输入文案..."
           @input="store.updatePage(page.index, page.content)"
         />
-        
+
         <div class="word-count">{{ page.content.length }} 字</div>
       </div>
 
@@ -62,21 +80,33 @@
         </div>
       </div>
     </div>
-    
+
     <div style="height: 100px;"></div>
+
+    <!-- 错误提示 -->
+    <div v-if="error" class="error-toast">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+      {{ error }}
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
+import { generateOutlineStream } from '../api'
 
 const router = useRouter()
 const store = useGeneratorStore()
 
 const dragOverIndex = ref<number | null>(null)
 const draggedIndex = ref<number | null>(null)
+const error = ref('')
+const streamingContentRef = ref<HTMLElement | null>(null)
+
+// 流式生成控制器
+let streamAbortController: { abort: () => void } | null = null
 
 const getPageTypeName = (type: string) => {
   const names = {
@@ -86,6 +116,56 @@ const getPageTypeName = (type: string) => {
   }
   return names[type as keyof typeof names] || '内容'
 }
+
+// 自动滚动到底部
+function scrollToBottom() {
+  nextTick(() => {
+    if (streamingContentRef.value) {
+      streamingContentRef.value.scrollTop = streamingContentRef.value.scrollHeight
+    }
+  })
+}
+
+// 开始流式生成大纲
+function startStreamingGeneration() {
+  if (!store.isStreamingOutline) return
+
+  streamAbortController = generateOutlineStream(
+    store.topic,
+    store.userImages.length > 0 ? store.userImages : undefined,
+    store.streamingPageCount || undefined,
+    {
+      onChunk: (content) => {
+        store.appendStreamingContent(content)
+        scrollToBottom()
+      },
+      onDone: (result) => {
+        store.finishStreamingOutline(result.outline, result.pages)
+        streamAbortController = null
+      },
+      onError: (errorMsg) => {
+        store.errorStreamingOutline()
+        streamAbortController = null
+        error.value = errorMsg || '生成大纲失败'
+      }
+    }
+  )
+}
+
+// 组件挂载时检查是否需要开始流式生成
+onMounted(() => {
+  if (store.isStreamingOutline) {
+    startStreamingGeneration()
+  }
+})
+
+// 组件卸载时中止流式生成
+onUnmounted(() => {
+  if (streamAbortController) {
+    streamAbortController.abort()
+    streamAbortController = null
+  }
+})
 
 // 拖拽逻辑
 const onDragStart = (e: DragEvent, index: number) => {
@@ -124,6 +204,12 @@ const addPage = (type: 'cover' | 'content' | 'summary') => {
 }
 
 const goBack = () => {
+  // 如果正在流式生成，中止并返回
+  if (streamAbortController) {
+    streamAbortController.abort()
+    streamAbortController = null
+    store.errorStreamingOutline()
+  }
   router.back()
 }
 
@@ -133,6 +219,109 @@ const startGeneration = () => {
 </script>
 
 <style scoped>
+/* 流式生成容器 */
+.streaming-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+.streaming-card {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.streaming-header {
+  background: linear-gradient(135deg, rgba(255, 36, 66, 0.08), rgba(255, 36, 66, 0.04));
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 36, 66, 0.1);
+}
+
+.streaming-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--primary);
+  margin-bottom: 8px;
+}
+
+.streaming-indicator .dot {
+  width: 8px;
+  height: 8px;
+  background: var(--primary);
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+.streaming-topic {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.streaming-content {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 20px;
+  background: #fafafa;
+}
+
+.streaming-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--text-main);
+}
+
+.streaming-placeholder {
+  color: #999;
+  font-size: 14px;
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.streaming-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.streaming-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.streaming-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+/* 错误提示 */
+.error-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #FF4D4F;
+  color: white;
+  padding: 12px 24px;
+  border-radius: 50px;
+  box-shadow: 0 8px 24px rgba(255, 77, 79, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1000;
+}
+
 /* 网格布局 */
 .outline-grid {
   display: grid;

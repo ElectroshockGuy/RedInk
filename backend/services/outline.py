@@ -132,11 +132,21 @@ class OutlineService:
     def generate_outline(
         self,
         topic: str,
-        images: Optional[List[bytes]] = None
+        images: Optional[List[bytes]] = None,
+        page_count: Optional[int] = None
     ) -> Dict[str, Any]:
         try:
-            logger.info(f"开始生成大纲: topic={topic[:50]}..., images={len(images) if images else 0}")
-            prompt = self.prompt_template.format(topic=topic)
+            page_info = f", page_count={page_count}" if page_count else ""
+            logger.info(f"开始生成大纲: topic={topic[:50]}..., images={len(images) if images else 0}{page_info}")
+            
+            # 构建页数要求提示
+            page_count_instruction = ""
+            if page_count and page_count > 0:
+                page_count_instruction = f"\n\n【重要】用户要求生成恰好 {page_count} 页的内容（包括封面和总结），请严格按照此页数生成大纲。"
+            
+            prompt = self.prompt_template.format(
+                topic=topic + page_count_instruction
+            )
 
             if images and len(images) > 0:
                 prompt += f"\n\n注意：用户提供了 {len(images)} 张参考图片，请在生成大纲时考虑这些图片的内容和风格。这些图片可能是产品图、个人照片或场景图，请根据图片内容来优化大纲，使生成的内容与图片相关联。"

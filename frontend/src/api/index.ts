@@ -30,15 +30,19 @@ export interface FinishEvent {
   images: string[]
 }
 
-// 生成大纲（支持图片上传）
+// 生成大纲（支持图片上传和指定页数）
 export async function generateOutline(
   topic: string,
-  images?: File[]
+  images?: File[],
+  pageCount?: number
 ): Promise<OutlineResponse & { has_images?: boolean }> {
   // 如果有图片，使用 FormData
   if (images && images.length > 0) {
     const formData = new FormData()
     formData.append('topic', topic)
+    if (pageCount && pageCount > 0) {
+      formData.append('page_count', pageCount.toString())
+    }
     images.forEach((file) => {
       formData.append('images', file)
     })
@@ -57,7 +61,8 @@ export async function generateOutline(
 
   // 无图片，使用 JSON
   const response = await axios.post<OutlineResponse>(`${API_BASE_URL}/outline`, {
-    topic
+    topic,
+    page_count: pageCount && pageCount > 0 ? pageCount : undefined
   })
   return response.data
 }

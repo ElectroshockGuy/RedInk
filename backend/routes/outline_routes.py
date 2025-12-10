@@ -10,6 +10,8 @@ import time
 import json
 import base64
 import logging
+import threading
+import queue
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 from backend.services.outline import get_outline_service
 from .utils import log_request, log_error
@@ -120,44 +122,72 @@ def create_outline_blueprint():
             images_data = images if images else None
 
             def generate():
+                """
+                使用队列和后台线程实现带心跳的流式生成
+                即使 AI Provider 响应慢，也会定期发送心跳保持连接
+                """
+                data_queue = queue.Queue()
+                heartbeat_interval = 3  # 每 3 秒发送一次心跳
+                stop_event = threading.Event()
+
+                def ai_worker():
+                    """后台线程：调用 AI 并将结果放入队列"""
+                    try:
+                        for chunk in outline_service.generate_outline_stream(
+                            topic,
+                            images_data,
+                            page_count=page_count
+                        ):
+                            data_queue.put(('chunk', chunk))
+                        data_queue.put(('done', None))
+                    except Exception as e:
+                        data_queue.put(('error', str(e)))
+                    finally:
+                        stop_event.set()
+
+                # 启动后台 AI 工作线程
+                worker_thread = threading.Thread(target=ai_worker, daemon=True)
+                worker_thread.start()
+
                 full_text = ""
-                last_heartbeat = time.time()
-                heartbeat_interval = 15  # 每 15 秒发送一次心跳
                 chunk_count = 0
 
-                try:
-                    # 发送开始事件，用于测试连接
-                    logger.debug("📤 发送 SSE 开始事件")
-                    yield f"event: start\ndata: {json.dumps({'message': 'streaming started'})}\n\n"
+                # 发送开始事件
+                logger.debug("📤 发送 SSE 开始事件")
+                yield f"event: start\ndata: {json.dumps({'message': 'streaming started'})}\n\n"
 
-                    for chunk in outline_service.generate_outline_stream(
-                        topic,
-                        images_data,
-                        page_count=page_count
-                    ):
-                        chunk_count += 1
-                        full_text += chunk
-                        # 发送文本片段
-                        logger.debug(f"📤 发送 chunk #{chunk_count}: {len(chunk)} 字符")
-                        yield f"event: chunk\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+                # 主循环：处理队列数据，定期发送心跳
+                while not stop_event.is_set() or not data_queue.empty():
+                    try:
+                        # 尝试从队列获取数据，最多等待 heartbeat_interval 秒
+                        event_type, data = data_queue.get(timeout=heartbeat_interval)
 
-                        # 检查是否需要发送心跳
-                        current_time = time.time()
-                        if current_time - last_heartbeat > heartbeat_interval:
-                            yield f"event: heartbeat\ndata: {{}}\n\n"
-                            last_heartbeat = current_time
+                        if event_type == 'chunk':
+                            chunk_count += 1
+                            full_text += data
+                            logger.debug(f"📤 发送 chunk #{chunk_count}: {len(data)} 字符")
+                            yield f"event: chunk\ndata: {json.dumps({'content': data}, ensure_ascii=False)}\n\n"
 
-                    # 生成完成，解析大纲
-                    pages = outline_service._parse_outline(full_text)
-                    has_images = images_data is not None and len(images_data) > 0
+                        elif event_type == 'done':
+                            # 生成完成，解析大纲
+                            pages = outline_service._parse_outline(full_text)
+                            has_images = images_data is not None and len(images_data) > 0
+                            logger.info(f"✅ 流式大纲生成完成，共 {len(pages)} 页，发送了 {chunk_count} 个 chunk")
+                            yield f"event: done\ndata: {json.dumps({'outline': full_text, 'pages': pages, 'has_images': has_images}, ensure_ascii=False)}\n\n"
+                            break
 
-                    logger.info(f"✅ 流式大纲生成完成，共 {len(pages)} 页，发送了 {chunk_count} 个 chunk")
-                    yield f"event: done\ndata: {json.dumps({'outline': full_text, 'pages': pages, 'has_images': has_images}, ensure_ascii=False)}\n\n"
+                        elif event_type == 'error':
+                            logger.error(f"❌ 流式大纲生成失败: {data}")
+                            yield f"event: error\ndata: {json.dumps({'error': data}, ensure_ascii=False)}\n\n"
+                            break
 
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.error(f"❌ 流式大纲生成失败: {error_msg}")
-                    yield f"event: error\ndata: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
+                    except queue.Empty:
+                        # 队列超时，发送心跳保持连接
+                        logger.debug("💓 发送心跳包")
+                        yield f"event: heartbeat\ndata: {{}}\n\n"
+
+                # 等待工作线程结束
+                worker_thread.join(timeout=1)
 
             response = Response(
                 stream_with_context(generate()),
@@ -171,7 +201,6 @@ def create_outline_blueprint():
                     'Content-Type': 'text/event-stream; charset=utf-8'
                 }
             )
-            # 禁用响应缓冲
             response.implicit_sequence_conversion = False
             return response
 

@@ -43,6 +43,21 @@
     <!-- 工具栏 -->
     <div class="composer-toolbar">
       <div class="toolbar-left">
+        <!-- 页数输入框 -->
+        <div class="page-count-selector">
+          <label class="page-count-label">页数</label>
+          <input 
+            type="number"
+            v-model.number="selectedPageCount" 
+            class="page-count-input"
+            :disabled="loading"
+            @input="handlePageCountChange"
+            min="0"
+            max="100"
+            placeholder="自动"
+          />
+          <span class="page-count-hint">留空或 0 为自动</span>
+        </div>
         <label class="tool-btn" :class="{ 'active': uploadedImages.length > 0 }" title="上传参考图">
           <input
             type="file"
@@ -103,7 +118,23 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'generate'): void
   (e: 'imagesChange', images: File[]): void
+  (e: 'pageCountChange', count: number): void
 }>()
+
+// 页数选择
+const selectedPageCount = ref<number | null>(null) // null 或 0 表示自动
+
+/**
+ * 处理页数变化
+ */
+function handlePageCountChange() {
+  // 限制范围 0-100
+  let value = selectedPageCount.value || 0
+  if (value < 0) value = 0
+  if (value > 100) value = 100
+  selectedPageCount.value = value || null
+  emit('pageCountChange', value)
+}
 
 // 输入框引用
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -201,7 +232,8 @@ onUnmounted(() => {
 
 // 暴露方法给父组件
 defineExpose({
-  clearPreviews
+  clearPreviews,
+  getPageCount: () => selectedPageCount.value
 })
 </script>
 
@@ -323,7 +355,60 @@ defineExpose({
 
 .toolbar-left {
   display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* 页数选择器样式 */
+.page-count-selector {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  padding: 6px 12px;
+  background: #f5f5f5;
+  border-radius: 10px;
+}
+
+.page-count-label {
+  font-size: 13px;
+  color: #666;
+  white-space: nowrap;
+}
+
+.page-count-input {
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: #333;
+  outline: none;
+  padding: 2px 4px;
+  width: 50px;
+  text-align: center;
+}
+
+.page-count-input::-webkit-outer-spin-button,
+.page-count-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.page-count-input[type=number] {
+  -moz-appearance: textfield;
+}
+
+.page-count-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-count-input:focus {
+  color: var(--primary, #ff2442);
+}
+
+.page-count-hint {
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
 }
 
 .tool-btn {

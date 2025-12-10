@@ -24,6 +24,7 @@
         :loading="loading"
         @generate="handleGenerate"
         @imagesChange="handleImagesChange"
+        @pageCountChange="handlePageCountChange"
       />
     </div>
 
@@ -67,11 +68,21 @@ const composerRef = ref<InstanceType<typeof ComposerInput> | null>(null)
 // 上传的图片文件
 const uploadedImageFiles = ref<File[]>([])
 
+// 指定的页数
+const pageCount = ref(0) // 0 表示自动
+
 /**
  * 处理图片变化
  */
 function handleImagesChange(images: File[]) {
   uploadedImageFiles.value = images
+}
+
+/**
+ * 处理页数变化
+ */
+function handlePageCountChange(count: number) {
+  pageCount.value = count
 }
 
 /**
@@ -86,9 +97,13 @@ async function handleGenerate() {
   try {
     const imageFiles = uploadedImageFiles.value
 
+    // 获取页数，优先使用组件的值
+    const targetPageCount = composerRef.value?.getPageCount() || pageCount.value
+
     const result = await generateOutline(
       topic.value.trim(),
-      imageFiles.length > 0 ? imageFiles : undefined
+      imageFiles.length > 0 ? imageFiles : undefined,
+      targetPageCount > 0 ? targetPageCount : undefined
     )
 
     if (result.success && result.pages) {

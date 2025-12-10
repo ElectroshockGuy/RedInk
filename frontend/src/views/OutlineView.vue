@@ -28,7 +28,21 @@
         </div>
         <div class="streaming-content" ref="streamingContentRef">
           <pre v-if="store.streamingOutlineContent">{{ store.streamingOutlineContent }}</pre>
-          <div v-else class="streaming-placeholder">等待 AI 响应中...</div>
+          <div v-else class="streaming-placeholder premium-loading">
+            <div class="loading-animation">
+              <div class="pulse-ring"></div>
+              <div class="pulse-ring delay"></div>
+              <div class="magic-icon">✨</div>
+            </div>
+            <div class="loading-text-container">
+              <transition name="fade-slide" mode="out-in">
+                <div :key="currentTipIndex" class="loading-tip">
+                  {{ loadingTips[currentTipIndex] }}
+                </div>
+              </transition>
+            </div>
+            <div class="loading-subtext">生成高质量大纲需要一点时间，请保持页面打开</div>
+          </div>
         </div>
       </div>
     </div>
@@ -108,6 +122,17 @@ const streamingContentRef = ref<HTMLElement | null>(null)
 // 流式生成控制器
 let streamAbortController: { abort: () => void } | null = null
 
+// Loading Tips Logic
+const currentTipIndex = ref(0)
+const loadingTips = [
+  '正在深入分析您的主题...',
+  '正在构思大纲结构...',
+  '页面数量越多，通过 AI 生成的时间越长...',
+  '正在打磨每一个章节的文案...',
+  'AI 正在发挥创意，为您生成独家内容...'
+]
+let tipInterval: number | null = null
+
 const getPageTypeName = (type: string) => {
   const names = {
     cover: '封面',
@@ -157,6 +182,11 @@ onMounted(() => {
   if (store.isStreamingOutline) {
     startStreamingGeneration()
   }
+  
+  // Start rotating tips
+  tipInterval = window.setInterval(() => {
+    currentTipIndex.value = (currentTipIndex.value + 1) % loadingTips.length
+  }, 3000)
 })
 
 // 组件卸载时中止流式生成
@@ -164,6 +194,10 @@ onUnmounted(() => {
   if (streamAbortController) {
     streamAbortController.abort()
     streamAbortController = null
+  }
+  if (tipInterval) {
+    clearInterval(tipInterval)
+    tipInterval = null
   }
 })
 
@@ -472,5 +506,100 @@ const startGeneration = () => {
   font-size: 32px;
   font-weight: 300;
   margin-bottom: 8px;
+}
+
+/* Premium Loading Styles */
+.premium-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+}
+
+.loading-animation {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pulse-ring {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid var(--primary);
+  opacity: 0;
+  animation: ripple 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+.pulse-ring.delay {
+  animation-delay: 1s;
+}
+
+.magic-icon {
+  font-size: 32px;
+  animation: float 3s ease-in-out infinite;
+  z-index: 2;
+}
+
+@keyframes ripple {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.loading-text-container {
+  height: 28px; /* Fixed height to prevent layout jump */
+  margin-bottom: 12px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.loading-tip {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-main);
+  width: 100%;
+}
+
+.loading-subtext {
+  font-size: 13px;
+  color: #999;
+}
+
+/* Transitions */
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition: all 0.5s ease;
+}
+
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
 }
 </style>

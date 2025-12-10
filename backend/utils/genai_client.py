@@ -96,6 +96,80 @@ class GenAIClient:
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
         ]
 
+    def generate_text_stream(
+        self,
+        prompt: str,
+        model: str = "gemini-3-pro-preview",
+        temperature: float = 1.0,
+        max_output_tokens: int = 8000,
+        use_search: bool = False,
+        use_thinking: bool = False,
+        images: list = None,
+        system_prompt: str = None,
+        **kwargs
+    ):
+        """
+        流式生成文本（生成器函数）
+
+        Args:
+            prompt: 提示词
+            model: 模型名称
+            temperature: 温度
+            max_output_tokens: 最大输出 token
+            use_search: 是否使用搜索
+            use_thinking: 是否启用思考模式
+            images: 图片列表
+            system_prompt: 系统提示词
+
+        Yields:
+            生成的文本片段
+        """
+        parts = [types.Part(text=prompt)]
+
+        if images:
+            for img_data in images:
+                if isinstance(img_data, bytes):
+                    parts.append(types.Part(
+                        inline_data=types.Blob(
+                            mime_type="image/png",
+                            data=img_data
+                        )
+                    ))
+
+        contents = [
+            types.Content(
+                role="user",
+                parts=parts
+            )
+        ]
+
+        config_kwargs = {
+            "temperature": temperature,
+            "top_p": 0.95,
+            "max_output_tokens": max_output_tokens,
+            "safety_settings": self.default_safety_settings,
+        }
+
+        # 添加搜索工具
+        if use_search:
+            config_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+
+        # 添加思考配置
+        if use_thinking:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="HIGH")
+
+        generate_content_config = types.GenerateContentConfig(**config_kwargs)
+
+        for chunk in self.client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if not chunk.candidates or not chunk.candidates[0].content or not chunk.candidates[0].content.parts:
+                continue
+            if chunk.text:
+                yield chunk.text
+
     @retry_on_429(max_retries=3, base_delay=2)
     def generate_text(
         self,

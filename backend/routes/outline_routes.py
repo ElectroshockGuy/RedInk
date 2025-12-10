@@ -3,12 +3,14 @@
 
 包含功能：
 - 生成大纲（支持图片上传）
+- 流式生成大纲（SSE）
 """
 
 import time
+import json
 import base64
 import logging
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response, stream_with_context
 from backend.services.outline import get_outline_service
 from .utils import log_request, log_error
 
@@ -79,6 +81,93 @@ def create_outline_blueprint():
             return jsonify({
                 "success": False,
                 "error": f"大纲生成异常。\n错误详情: {error_msg}\n建议：检查后端日志获取更多信息"
+            }), 500
+
+    @outline_bp.route('/outline/stream', methods=['POST'])
+    def generate_outline_stream():
+        """
+        流式生成大纲（SSE）
+
+        请求格式：
+        application/json
+           - topic: 主题文本
+           - images: base64 编码的图片数组（可选）
+           - page_count: 指定页数（可选）
+
+        SSE 事件：
+        - chunk: 生成的文本片段 {"content": "..."}
+        - done: 生成完成 {"outline": "完整大纲", "pages": [...]}
+        - error: 错误 {"error": "错误信息"}
+        - heartbeat: 心跳包 {}
+        """
+        try:
+            # 解析请求数据
+            topic, images, page_count = _parse_outline_request()
+
+            # 验证必填参数
+            if not topic:
+                logger.warning("流式大纲生成请求缺少 topic 参数")
+                return jsonify({
+                    "success": False,
+                    "error": "参数错误：topic 不能为空。"
+                }), 400
+
+            page_info = f"，指定页数: {page_count}" if page_count else ""
+            logger.info(f"🔄 开始流式生成大纲，主题: {topic[:50]}...{page_info}")
+
+            # 预先获取服务实例和图片数据（在请求上下文中）
+            outline_service = get_outline_service()
+            images_data = images if images else None
+
+            def generate():
+                full_text = ""
+                last_heartbeat = time.time()
+                heartbeat_interval = 15  # 每 15 秒发送一次心跳
+
+                try:
+                    for chunk in outline_service.generate_outline_stream(
+                        topic,
+                        images_data,
+                        page_count=page_count
+                    ):
+                        full_text += chunk
+                        # 发送文本片段
+                        yield f"event: chunk\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+
+                        # 检查是否需要发送心跳
+                        current_time = time.time()
+                        if current_time - last_heartbeat > heartbeat_interval:
+                            yield f"event: heartbeat\ndata: {{}}\n\n"
+                            last_heartbeat = current_time
+
+                    # 生成完成，解析大纲
+                    pages = outline_service._parse_outline(full_text)
+                    has_images = images_data is not None and len(images_data) > 0
+
+                    logger.info(f"✅ 流式大纲生成完成，共 {len(pages)} 页")
+                    yield f"event: done\ndata: {json.dumps({'outline': full_text, 'pages': pages, 'has_images': has_images}, ensure_ascii=False)}\n\n"
+
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"❌ 流式大纲生成失败: {error_msg}")
+                    yield f"event: error\ndata: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
+
+            return Response(
+                stream_with_context(generate()),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'X-Accel-Buffering': 'no'
+                }
+            )
+
+        except Exception as e:
+            log_error('/outline/stream', e)
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"流式大纲生成异常。\n错误详情: {error_msg}"
             }), 500
 
     return outline_bp

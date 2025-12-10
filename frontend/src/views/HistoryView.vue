@@ -121,7 +121,7 @@
     <OutlineModal
       v-if="showOutlineModal && viewingRecord"
       :visible="showOutlineModal"
-      :pages="viewingRecord.outline.pages"
+      :recordId="viewingRecord.id"
       @close="showOutlineModal = false"
     />
 

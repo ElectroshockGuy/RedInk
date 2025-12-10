@@ -99,6 +99,91 @@ class TextChatClient:
 
         return content
 
+    def generate_text_stream(
+        self,
+        prompt: str,
+        model: str = "gemini-3-pro-preview",
+        temperature: float = 1.0,
+        max_output_tokens: int = 8000,
+        images: List[Union[bytes, str]] = None,
+        system_prompt: str = None,
+        **kwargs
+    ):
+        """
+        流式生成文本（生成器函数）
+
+        Args:
+            prompt: 提示词
+            model: 模型名称
+            temperature: 温度
+            max_output_tokens: 最大输出 token
+            images: 图片列表（可选）
+            system_prompt: 系统提示词（可选）
+
+        Yields:
+            生成的文本片段
+        """
+        messages = []
+
+        # 添加系统提示词
+        if system_prompt:
+            messages.append({
+                "role": "system",
+                "content": system_prompt
+            })
+
+        # 构建用户消息内容
+        content = self._build_content_with_images(prompt, images)
+        messages.append({
+            "role": "user",
+            "content": content
+        })
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_output_tokens,
+            "stream": True
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        response = requests.post(
+            self.chat_endpoint,
+            json=payload,
+            headers=headers,
+            timeout=300,
+            stream=True
+        )
+
+        if response.status_code != 200:
+            error_detail = response.text[:500]
+            raise Exception(f"API 请求失败 (状态码: {response.status_code}): {error_detail}")
+
+        # 解析 SSE 流
+        for line in response.iter_lines():
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    data = line[6:]
+                    if data == '[DONE]':
+                        break
+                    try:
+                        import json
+                        chunk = json.loads(data)
+                        if 'choices' in chunk and len(chunk['choices']) > 0:
+                            delta = chunk['choices'][0].get('delta', {})
+                            content = delta.get('content', '')
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+
     @retry_on_429(max_retries=3, base_delay=2)
     def generate_text(
         self,

@@ -26,6 +26,20 @@
         @imagesChange="handleImagesChange"
         @pageCountChange="handlePageCountChange"
       />
+
+      <!-- 流式生成预览区域 -->
+      <div v-if="loading" class="streaming-preview">
+        <div class="streaming-header">
+          <div class="streaming-indicator">
+            <span class="dot"></span>
+            正在生成大纲...
+          </div>
+        </div>
+        <div class="streaming-content" ref="streamingContentRef">
+          <pre v-if="streamingContent">{{ streamingContent }}</pre>
+          <div v-else class="streaming-placeholder">等待 AI 响应中...</div>
+        </div>
+      </div>
     </div>
 
     <!-- 版权信息 -->
@@ -47,10 +61,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGeneratorStore } from '../stores/generator'
-import { generateOutline } from '../api'
+import { generateOutlineStream } from '../api'
 
 // 引入组件
 import ShowcaseBackground from '../components/home/ShowcaseBackground.vue'
@@ -64,12 +78,19 @@ const topic = ref('')
 const loading = ref(false)
 const error = ref('')
 const composerRef = ref<InstanceType<typeof ComposerInput> | null>(null)
+const streamingContentRef = ref<HTMLElement | null>(null)
 
 // 上传的图片文件
 const uploadedImageFiles = ref<File[]>([])
 
 // 指定的页数
 const pageCount = ref(0) // 0 表示自动
+
+// 流式生成内容
+const streamingContent = ref('')
+
+// 流式生成控制器
+let streamAbortController: { abort: () => void } | null = null
 
 /**
  * 处理图片变化
@@ -86,51 +107,69 @@ function handlePageCountChange(count: number) {
 }
 
 /**
- * 生成大纲
+ * 自动滚动到底部
+ */
+function scrollToBottom() {
+  nextTick(() => {
+    if (streamingContentRef.value) {
+      streamingContentRef.value.scrollTop = streamingContentRef.value.scrollHeight
+    }
+  })
+}
+
+/**
+ * 生成大纲（流式）
  */
 async function handleGenerate() {
   if (!topic.value.trim()) return
 
   loading.value = true
   error.value = ''
+  streamingContent.value = ''
 
-  try {
-    const imageFiles = uploadedImageFiles.value
+  const imageFiles = uploadedImageFiles.value
+  const targetPageCount = composerRef.value?.getPageCount() || pageCount.value
 
-    // 获取页数，优先使用组件的值
-    const targetPageCount = composerRef.value?.getPageCount() || pageCount.value
+  // 使用流式生成
+  streamAbortController = generateOutlineStream(
+    topic.value.trim(),
+    imageFiles.length > 0 ? imageFiles : undefined,
+    targetPageCount > 0 ? targetPageCount : undefined,
+    {
+      onChunk: (content) => {
+        streamingContent.value += content
+        scrollToBottom()
+      },
+      onDone: (result) => {
+        loading.value = false
+        streamingContent.value = ''
+        streamAbortController = null
 
-    const result = await generateOutline(
-      topic.value.trim(),
-      imageFiles.length > 0 ? imageFiles : undefined,
-      targetPageCount > 0 ? targetPageCount : undefined
-    )
+        store.setTopic(topic.value.trim())
+        store.setOutline(result.outline || '', result.pages)
+        store.recordId = null
 
-    if (result.success && result.pages) {
-      store.setTopic(topic.value.trim())
-      store.setOutline(result.outline || '', result.pages)
-      store.recordId = null
+        // 保存用户上传的图片到 store
+        if (imageFiles.length > 0) {
+          store.userImages = imageFiles
+        } else {
+          store.userImages = []
+        }
 
-      // 保存用户上传的图片到 store
-      if (imageFiles.length > 0) {
-        store.userImages = imageFiles
-      } else {
-        store.userImages = []
+        // 清理 ComposerInput 的预览
+        composerRef.value?.clearPreviews()
+        uploadedImageFiles.value = []
+
+        router.push('/outline')
+      },
+      onError: (errorMsg) => {
+        loading.value = false
+        streamingContent.value = ''
+        streamAbortController = null
+        error.value = errorMsg || '生成大纲失败'
       }
-
-      // 清理 ComposerInput 的预览
-      composerRef.value?.clearPreviews()
-      uploadedImageFiles.value = []
-
-      router.push('/outline')
-    } else {
-      error.value = result.error || '生成大纲失败'
     }
-  } catch (err: any) {
-    error.value = err.message || '网络错误，请重试'
-  } finally {
-    loading.value = false
-  }
+  )
 }
 </script>
 
@@ -250,5 +289,84 @@ async function handleGenerate() {
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Streaming Preview */
+.streaming-preview {
+  margin-top: 24px;
+  border: 1px solid rgba(255, 36, 66, 0.2);
+  border-radius: 16px;
+  overflow: hidden;
+  animation: fadeIn 0.3s ease-out;
+}
+
+.streaming-header {
+  background: linear-gradient(135deg, rgba(255, 36, 66, 0.08), rgba(255, 36, 66, 0.04));
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 36, 66, 0.1);
+}
+
+.streaming-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--primary);
+}
+
+.streaming-indicator .dot {
+  width: 8px;
+  height: 8px;
+  background: var(--primary);
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+.streaming-content {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 16px;
+  background: #fafafa;
+}
+
+.streaming-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-main);
+  text-align: left;
+}
+
+.streaming-placeholder {
+  color: #999;
+  font-size: 14px;
+  text-align: center;
+  padding: 20px;
+}
+
+.streaming-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.streaming-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.streaming-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+.streaming-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
 }
 </style>

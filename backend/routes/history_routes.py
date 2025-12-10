@@ -12,9 +12,11 @@
 
 import os
 import io
+import json
+import time
 import zipfile
 import logging
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, Response
 from backend.services.history import get_history_service
 from backend.config import Config
 
@@ -444,6 +446,77 @@ def create_history_blueprint():
             }), 500
 
     # ==================== 下载功能 ====================
+
+    @history_bp.route('/history/<record_id>/outline/stream', methods=['GET'])
+    def stream_outline(record_id):
+        """
+        流式返回大纲内容（SSE）
+
+        路径参数：
+        - record_id: 记录 ID
+
+        返回：
+        - SSE 事件流，包含大纲页面内容
+        - 事件类型：page（页面数据）、done（完成）、error（错误）
+        - 心跳包：heartbeat 事件
+        """
+        def generate():
+            try:
+                history_service = get_history_service()
+                record = history_service.get_record(record_id)
+
+                if not record:
+                    yield f"event: error\ndata: {json.dumps({'error': '记录不存在'})}\n\n"
+                    return
+
+                outline = record.get('outline', {})
+                pages = outline.get('pages', [])
+
+                if not pages:
+                    yield f"event: error\ndata: {json.dumps({'error': '大纲内容为空'})}\n\n"
+                    return
+
+                # 发送总页数信息
+                yield f"event: start\ndata: {json.dumps({'total': len(pages)})}\n\n"
+
+                # 逐页流式发送
+                for idx, page in enumerate(pages):
+                    # 发送心跳包
+                    yield f"event: heartbeat\ndata: {json.dumps({'ts': int(time.time() * 1000)})}\n\n"
+
+                    # 流式发送页面内容（按字符分块）
+                    content = page.get('content', '')
+                    page_type = page.get('type', 'content')
+                    chunk_size = 20  # 每次发送的字符数
+
+                    # 先发送页面开始事件
+                    yield f"event: page_start\ndata: {json.dumps({'index': idx, 'type': page_type, 'total_length': len(content)})}\n\n"
+
+                    # 分块发送内容
+                    for i in range(0, len(content), chunk_size):
+                        chunk = content[i:i + chunk_size]
+                        yield f"event: chunk\ndata: {json.dumps({'index': idx, 'content': chunk, 'offset': i})}\n\n"
+                        time.sleep(0.02)  # 20ms 延迟，模拟打字效果
+
+                    # 发送页面完成事件
+                    yield f"event: page_done\ndata: {json.dumps({'index': idx})}\n\n"
+
+                # 发送完成事件
+                yield f"event: done\ndata: {json.dumps({'success': True, 'total': len(pages)})}\n\n"
+
+            except Exception as e:
+                logger.error(f"流式返回大纲失败: {e}")
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+        return Response(
+            generate(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            }
+        )
 
     @history_bp.route('/history/<record_id>/download', methods=['GET'])
     def download_history_zip(record_id):

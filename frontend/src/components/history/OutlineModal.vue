@@ -1,19 +1,54 @@
 <template>
   <!-- 大纲查看模态框 -->
-  <div v-if="visible && pages" class="outline-modal-overlay" @click="$emit('close')">
+  <div v-if="visible" class="outline-modal-overlay" @click="handleClose">
     <div class="outline-modal-content" @click.stop>
       <div class="outline-modal-header">
         <h3>完整大纲</h3>
-        <button class="close-icon" @click="$emit('close')">×</button>
+        <div class="header-right">
+          <span v-if="loading" class="loading-indicator">
+            <span class="spinner-mini"></span>
+            加载中...
+          </span>
+          <span v-else-if="streamingPages.length > 0" class="page-counter">
+            {{ streamingPages.length }} 页
+          </span>
+          <button class="close-icon" @click="handleClose">×</button>
+        </div>
       </div>
       <div class="outline-modal-body">
-        <div v-for="(page, idx) in pages" :key="idx" class="outline-page-card">
-          <div class="outline-page-card-header">
-            <span class="page-badge">P{{ idx + 1 }}</span>
-            <span class="page-type-badge" :class="page.type">{{ getPageTypeName(page.type) }}</span>
-            <span class="word-count">{{ page.content.length }} 字</span>
+        <!-- 加载状态 -->
+        <div v-if="loading && streamingPages.length === 0" class="loading-state">
+          <div class="spinner"></div>
+          <p>正在加载大纲...</p>
+        </div>
+
+        <!-- 错误状态 -->
+        <div v-else-if="error" class="error-state">
+          <p>{{ error }}</p>
+        </div>
+
+        <!-- 流式内容 -->
+        <div v-else>
+          <div
+            v-for="(page, idx) in streamingPages"
+            :key="idx"
+            class="outline-page-card"
+            :class="{ 'streaming': page.streaming }"
+          >
+            <div class="outline-page-card-header">
+              <span class="page-badge">P{{ idx + 1 }}</span>
+              <span class="page-type-badge" :class="page.type">{{ getPageTypeName(page.type) }}</span>
+              <span class="word-count">{{ page.content.length }} 字</span>
+              <span v-if="page.streaming" class="streaming-indicator">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+              </span>
+            </div>
+            <div class="outline-page-card-content">
+              {{ page.content }}<span v-if="page.streaming" class="cursor">|</span>
+            </div>
           </div>
-          <div class="outline-page-card-content">{{ page.content }}</div>
         </div>
       </div>
     </div>
@@ -22,31 +57,40 @@
 
 <script setup lang="ts">
 /**
- * 大纲查看模态框组件
+ * 大纲查看模态框组件（流式版本）
  *
- * 以卡片形式展示大纲的每一页内容，包含：
- * - 页码标识
- * - 页面类型（封面/内容/总结）
- * - 字数统计
- * - 完整内容
+ * 通过 SSE 流式获取大纲内容，实时显示加载进度
+ * - 支持逐页、逐字显示
+ * - 自动忽略心跳包
+ * - 关闭时自动中断请求
  */
 
-// 定义页面类型
-interface Page {
+import { ref, watch, onUnmounted } from 'vue'
+import { streamOutline } from '../../api'
+
+// 定义流式页面类型
+interface StreamingPage {
   type: 'cover' | 'content' | 'summary'
   content: string
+  streaming: boolean
 }
 
 // 定义 Props
-defineProps<{
+const props = defineProps<{
   visible: boolean
-  pages: Page[] | null
+  recordId: string | null
 }>()
 
 // 定义 Emits
-defineEmits<{
+const emit = defineEmits<{
   (e: 'close'): void
 }>()
+
+// 状态
+const streamingPages = ref<StreamingPage[]>([])
+const loading = ref(false)
+const error = ref<string | null>(null)
+let abortFn: (() => void) | null = null
 
 /**
  * 获取页面类型的中文名称
@@ -59,6 +103,94 @@ function getPageTypeName(type: string): string {
   }
   return names[type] || '内容'
 }
+
+/**
+ * 开始流式获取大纲
+ */
+function startStreaming() {
+  if (!props.recordId) return
+
+  // 重置状态
+  streamingPages.value = []
+  loading.value = true
+  error.value = null
+
+  const { abort } = streamOutline(props.recordId, {
+    onStart: () => {
+      loading.value = true
+    },
+    onPageStart: (index, type) => {
+      // 确保数组有足够的长度
+      while (streamingPages.value.length <= index) {
+        streamingPages.value.push({
+          type: 'content',
+          content: '',
+          streaming: false
+        })
+      }
+      streamingPages.value[index] = {
+        type: type as 'cover' | 'content' | 'summary',
+        content: '',
+        streaming: true
+      }
+    },
+    onChunk: (index, content) => {
+      if (streamingPages.value[index]) {
+        streamingPages.value[index].content += content
+      }
+    },
+    onPageDone: (index) => {
+      if (streamingPages.value[index]) {
+        streamingPages.value[index].streaming = false
+      }
+    },
+    onDone: () => {
+      loading.value = false
+    },
+    onError: (err) => {
+      loading.value = false
+      error.value = err
+    }
+  })
+
+  abortFn = abort
+}
+
+/**
+ * 停止流式获取
+ */
+function stopStreaming() {
+  if (abortFn) {
+    abortFn()
+    abortFn = null
+  }
+}
+
+/**
+ * 关闭模态框
+ */
+function handleClose() {
+  stopStreaming()
+  emit('close')
+}
+
+// 监听 visible 变化
+watch(
+  () => props.visible,
+  (visible) => {
+    if (visible && props.recordId) {
+      startStreaming()
+    } else {
+      stopStreaming()
+    }
+  },
+  { immediate: true }
+)
+
+// 组件卸载时清理
+onUnmounted(() => {
+  stopStreaming()
+})
 </script>
 
 <style scoped>
@@ -104,6 +236,25 @@ function getPageTypeName(type: string): string {
   color: #1a1a1a;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #666;
+}
+
+.page-counter {
+  font-size: 13px;
+  color: #999;
+}
+
 /* 关闭按钮 */
 .close-icon {
   background: none;
@@ -128,6 +279,54 @@ function getPageTypeName(type: string): string {
   background: #f9fafb;
 }
 
+/* 加载状态 */
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 0;
+  color: #666;
+}
+
+.loading-state p {
+  margin-top: 16px;
+  font-size: 14px;
+}
+
+/* 错误状态 */
+.error-state {
+  padding: 40px;
+  text-align: center;
+  color: #dc3545;
+}
+
+/* 旋转器 */
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #eee;
+  border-top-color: var(--primary, #ff2442);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.spinner-mini {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ddd;
+  border-top-color: var(--primary, #ff2442);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* 大纲页面卡片 */
 .outline-page-card {
   background: #ffffff;
@@ -146,6 +345,11 @@ function getPageTypeName(type: string): string {
 
 .outline-page-card:last-child {
   margin-bottom: 0;
+}
+
+.outline-page-card.streaming {
+  border-color: var(--primary, #ff2442);
+  border-width: 2px;
 }
 
 /* 卡片头部 */
@@ -208,6 +412,38 @@ function getPageTypeName(type: string): string {
   color: #999;
 }
 
+/* 流式加载指示器 */
+.streaming-indicator {
+  display: flex;
+  gap: 3px;
+  margin-left: 8px;
+}
+
+.streaming-indicator .dot {
+  width: 4px;
+  height: 4px;
+  background: var(--primary, #ff2442);
+  border-radius: 50%;
+  animation: bounce 1.4s ease-in-out infinite both;
+}
+
+.streaming-indicator .dot:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.streaming-indicator .dot:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: scale(0);
+  }
+  40% {
+    transform: scale(1);
+  }
+}
+
 /* 卡片内容 */
 .outline-page-card-content {
   font-size: 14px;
@@ -216,6 +452,22 @@ function getPageTypeName(type: string): string {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+/* 光标闪烁效果 */
+.cursor {
+  animation: blink 1s step-end infinite;
+  color: var(--primary, #ff2442);
+  font-weight: bold;
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* 响应式布局 */

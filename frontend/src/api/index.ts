@@ -67,6 +67,118 @@ export async function generateOutline(
   return response.data
 }
 
+// 流式生成大纲回调接口
+export interface GenerateOutlineStreamCallbacks {
+  onChunk?: (content: string) => void
+  onDone?: (result: { outline: string; pages: Page[]; has_images: boolean }) => void
+  onError?: (error: string) => void
+}
+
+// 流式生成大纲（SSE）
+export function generateOutlineStream(
+  topic: string,
+  images: File[] | undefined,
+  pageCount: number | undefined,
+  callbacks: GenerateOutlineStreamCallbacks
+): { abort: () => void } {
+  const abortController = new AbortController()
+
+  // 将图片转换为 base64
+  const convertImages = async (): Promise<string[]> => {
+    if (!images || images.length === 0) return []
+    return Promise.all(
+      images.map(
+        (file) =>
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(file)
+          })
+      )
+    )
+  }
+
+  convertImages()
+    .then((imagesBase64) => {
+      return fetch(`${API_BASE_URL}/outline/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          topic,
+          images: imagesBase64.length > 0 ? imagesBase64 : undefined,
+          page_count: pageCount && pageCount > 0 ? pageCount : undefined
+        }),
+        signal: abortController.signal
+      })
+    })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) {
+        throw new Error('无法读取响应流')
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.trim()) continue
+
+          const [eventLine, dataLine] = line.split('\n')
+          if (!eventLine || !dataLine) continue
+
+          const eventType = eventLine.replace('event: ', '').trim()
+          const eventData = dataLine.replace('data: ', '').trim()
+
+          // 忽略心跳包
+          if (eventType === 'heartbeat') continue
+
+          try {
+            const data = JSON.parse(eventData)
+
+            switch (eventType) {
+              case 'chunk':
+                callbacks.onChunk?.(data.content)
+                break
+              case 'done':
+                callbacks.onDone?.(data)
+                break
+              case 'error':
+                callbacks.onError?.(data.error)
+                break
+            }
+          } catch (e) {
+            console.error('解析 SSE 数据失败:', e)
+          }
+        }
+      }
+    })
+    .catch((error) => {
+      if (error.name !== 'AbortError') {
+        callbacks.onError?.(error.message || '流式生成大纲失败')
+      }
+    })
+
+  return {
+    abort: () => abortController.abort()
+  }
+}
+
 // 获取图片 URL（新格式：task_id/filename）
 // thumbnail 参数：true=缩略图（默认），false=原图
 export function getImageUrl(taskId: string, filename: string, thumbnail: boolean = true): string {
@@ -319,6 +431,99 @@ export async function getHistoryStats(): Promise<{
 }> {
   const response = await axios.get(`${API_BASE_URL}/history/stats`)
   return response.data
+}
+
+// SSE 流式获取大纲内容
+export interface OutlineStreamCallbacks {
+  onStart?: (total: number) => void
+  onPageStart?: (index: number, type: string, totalLength: number) => void
+  onChunk?: (index: number, content: string, offset: number) => void
+  onPageDone?: (index: number) => void
+  onDone?: (total: number) => void
+  onError?: (error: string) => void
+}
+
+export function streamOutline(
+  recordId: string,
+  callbacks: OutlineStreamCallbacks
+): { abort: () => void } {
+  const abortController = new AbortController()
+
+  fetch(`${API_BASE_URL}/history/${recordId}/outline/stream`, {
+    signal: abortController.signal
+  })
+    .then(async response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) {
+        throw new Error('无法读取响应流')
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.trim()) continue
+
+          const [eventLine, dataLine] = line.split('\n')
+          if (!eventLine || !dataLine) continue
+
+          const eventType = eventLine.replace('event: ', '').trim()
+          const eventData = dataLine.replace('data: ', '').trim()
+
+          // 忽略心跳包
+          if (eventType === 'heartbeat') continue
+
+          try {
+            const data = JSON.parse(eventData)
+
+            switch (eventType) {
+              case 'start':
+                callbacks.onStart?.(data.total)
+                break
+              case 'page_start':
+                callbacks.onPageStart?.(data.index, data.type, data.total_length)
+                break
+              case 'chunk':
+                callbacks.onChunk?.(data.index, data.content, data.offset)
+                break
+              case 'page_done':
+                callbacks.onPageDone?.(data.index)
+                break
+              case 'done':
+                callbacks.onDone?.(data.total)
+                break
+              case 'error':
+                callbacks.onError?.(data.error)
+                break
+            }
+          } catch (e) {
+            console.error('解析 SSE 数据失败:', e)
+          }
+        }
+      }
+    })
+    .catch(error => {
+      if (error.name !== 'AbortError') {
+        callbacks.onError?.(error.message || '流式获取大纲失败')
+      }
+    })
+
+  return {
+    abort: () => abortController.abort()
+  }
 }
 
 // 使用 POST 方式生成图片（更可靠）

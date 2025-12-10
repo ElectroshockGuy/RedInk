@@ -129,6 +129,60 @@ class OutlineService:
 
         return pages
 
+    def generate_outline_stream(
+        self,
+        topic: str,
+        images: Optional[List[bytes]] = None,
+        page_count: Optional[int] = None
+    ):
+        """
+        流式生成大纲（生成器函数）
+
+        Args:
+            topic: 主题
+            images: 参考图片列表
+            page_count: 指定页数
+
+        Yields:
+            str: 生成的文本片段
+        """
+        page_info = f", page_count={page_count}" if page_count else ""
+        logger.info(f"开始流式生成大纲: topic={topic[:50]}..., images={len(images) if images else 0}{page_info}")
+
+        # 构建页数要求提示
+        page_count_instruction = ""
+        if page_count and page_count > 0:
+            page_count_instruction = f"\n\n【重要】用户要求生成恰好 {page_count} 页的内容（包括封面和总结），请严格按照此页数生成大纲。"
+
+        prompt = self.prompt_template.format(
+            topic=topic + page_count_instruction
+        )
+
+        if images and len(images) > 0:
+            prompt += f"\n\n注意：用户提供了 {len(images)} 张参考图片，请在生成大纲时考虑这些图片的内容和风格。这些图片可能是产品图、个人照片或场景图，请根据图片内容来优化大纲，使生成的内容与图片相关联。"
+            logger.debug(f"添加了 {len(images)} 张参考图片到提示词")
+
+        # 从配置中获取模型参数
+        active_provider = self.text_config.get('active_provider', 'google_gemini')
+        providers = self.text_config.get('providers', {})
+        provider_config = providers.get(active_provider, {})
+
+        model = provider_config.get('model', 'gemini-2.0-flash-exp')
+        temperature = provider_config.get('temperature', 1.0)
+        max_output_tokens = provider_config.get('max_output_tokens', 8000)
+
+        logger.info(f"调用流式文本生成 API: model={model}, temperature={temperature}")
+
+        # 使用流式生成
+        for chunk in self.client.generate_text_stream(
+            prompt=prompt,
+            model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            images=images
+        ):
+            yield chunk
+
     def generate_outline(
         self,
         topic: str,

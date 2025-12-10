@@ -194,6 +194,14 @@ class Config:
         return active
 
     @classmethod
+    def get_image_max_concurrent(cls) -> int:
+        """获取图片生成全局最大并发数"""
+        config = cls.load_image_providers_config()
+        max_concurrent = config.get('max_concurrent', 15)
+        logger.debug(f"图片生成全局最大并发数: {max_concurrent}")
+        return max_concurrent
+
+    @classmethod
     def get_image_provider_config(cls, provider_name: str = None):
         config = cls.load_image_providers_config()
 

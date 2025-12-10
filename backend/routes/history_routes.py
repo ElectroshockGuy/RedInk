@@ -445,6 +445,56 @@ def create_history_blueprint():
                 "error": f"扫描所有任务失败。\n错误详情: {error_msg}"
             }), 500
 
+    @history_bp.route('/history/orphan/<task_id>', methods=['DELETE'])
+    def delete_orphan_task(task_id):
+        """
+        删除孤立任务（只有文件夹，无历史记录）
+
+        路径参数：
+        - task_id: 任务 ID
+
+        返回：
+        - success: 是否成功
+        - message: 结果消息
+        """
+        import shutil
+
+        try:
+            history_service = get_history_service()
+
+            # 验证这确实是个孤立任务（没有关联的历史记录）
+            index = history_service._load_index()
+            for rec in index.get("records", []):
+                if rec.get("task_id") == task_id:
+                    return jsonify({
+                        "success": False,
+                        "error": "此任务有关联的历史记录，不是孤立任务"
+                    }), 400
+
+            # 构建任务目录路径
+            task_dir = os.path.join(history_service.history_dir, task_id)
+
+            if not os.path.exists(task_dir):
+                return jsonify({
+                    "success": False,
+                    "error": "任务目录不存在"
+                }), 404
+
+            # 删除整个任务目录
+            shutil.rmtree(task_dir)
+
+            return jsonify({
+                "success": True,
+                "message": f"孤立任务 {task_id} 已删除"
+            }), 200
+
+        except Exception as e:
+            error_msg = str(e)
+            return jsonify({
+                "success": False,
+                "error": f"删除孤立任务失败: {error_msg}"
+            }), 500
+
     # ==================== 下载功能 ====================
 
     @history_bp.route('/history/<record_id>/outline/stream', methods=['GET'])

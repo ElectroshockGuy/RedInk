@@ -58,6 +58,15 @@
         >
           已归档
         </div>
+        <div
+          v-if="orphanTasks.length > 0"
+          class="tab-item orphan-tab"
+          :class="{ active: currentTab === 'orphan' }"
+          @click="switchTab('orphan')"
+        >
+          孤立任务
+          <span class="orphan-badge">{{ orphanTasks.length }}</span>
+        </div>
       </div>
 
       <div class="search-mini">
@@ -74,6 +83,49 @@
     <!-- Content Area -->
     <div v-if="loading" class="loading-state">
       <div class="spinner"></div>
+    </div>
+
+    <div v-else-if="currentTab === 'orphan'" class="orphan-tasks-container">
+      <div class="orphan-header">
+        <div class="orphan-info">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          <span>这些任务在磁盘上有图片文件，但没有关联的历史记录</span>
+        </div>
+      </div>
+      <div class="orphan-grid">
+        <div
+          v-for="task in orphanTasks"
+          :key="task.task_id"
+          class="orphan-card"
+        >
+          <div class="orphan-card-header">
+            <span class="orphan-task-id">{{ task.task_id.substring(0, 8) }}...</span>
+            <span class="orphan-image-count">{{ task.images_count }} 张图片</span>
+          </div>
+          <div class="orphan-images-preview">
+            <img
+              v-for="(img, idx) in task.images.slice(0, 4)"
+              :key="idx"
+              :src="`/api/images/${task.task_id}/${img}?thumbnail=true`"
+              class="orphan-thumb"
+              @click="viewOrphanTask(task)"
+            />
+            <div v-if="task.images.length > 4" class="orphan-more">
+              +{{ task.images.length - 4 }}
+            </div>
+          </div>
+          <div class="orphan-card-actions">
+            <button class="btn btn-sm" @click="viewOrphanTask(task)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+              查看
+            </button>
+            <button class="btn btn-sm btn-danger" @click="deleteOrphanTask(task)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div v-else-if="records.length === 0" class="empty-state-large">
@@ -125,6 +177,36 @@
       @close="showOutlineModal = false"
     />
 
+    <!-- 孤立任务图片查看器 -->
+    <div v-if="viewingOrphanTask" class="orphan-viewer-overlay" @click.self="closeOrphanViewer">
+      <div class="orphan-viewer-modal">
+        <div class="orphan-viewer-header">
+          <h3>孤立任务图片</h3>
+          <span class="orphan-viewer-id">{{ viewingOrphanTask.task_id }}</span>
+          <button class="close-btn" @click="closeOrphanViewer">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+        <div class="orphan-viewer-body">
+          <div class="orphan-viewer-grid">
+            <div
+              v-for="(img, idx) in viewingOrphanTask.images"
+              :key="idx"
+              class="orphan-viewer-item"
+            >
+              <img :src="`/api/images/${viewingOrphanTask.task_id}/${img}?thumbnail=false`" />
+              <div class="orphan-viewer-item-info">
+                <span>第 {{ idx + 1 }} 页</span>
+                <a :href="`/api/images/${viewingOrphanTask.task_id}/${img}?thumbnail=false`" download class="download-link">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -164,6 +246,14 @@ const currentTab = ref('all')
 const searchKeyword = ref('')
 const currentPage = ref(1)
 const totalPages = ref(1)
+
+// 孤立任务状态
+interface OrphanTask {
+  task_id: string
+  images_count: number
+  images: string[]
+}
+const orphanTasks = ref<OrphanTask[]>([])
 
 // 查看器状态
 const viewingRecord = ref<any>(null)
@@ -424,6 +514,16 @@ async function handleScanAll() {
       message += `- 同步成功: ${result.synced || 0}\n`
       message += `- 同步失败: ${result.failed || 0}\n`
 
+      // 从 results 中提取孤立任务的详细信息
+      if (result.results) {
+        const orphans = result.results.filter((r: any) => r.no_record && r.images_count > 0)
+        orphanTasks.value = orphans.map((r: any) => ({
+          task_id: r.task_id,
+          images_count: r.images_count,
+          images: r.images || []
+        }))
+      }
+
       if (result.orphan_tasks && result.orphan_tasks.length > 0) {
         message += `- 孤立任务（无记录）: ${result.orphan_tasks.length} 个\n`
       }
@@ -442,6 +542,45 @@ async function handleScanAll() {
   }
 }
 
+/**
+ * 查看孤立任务图片
+ */
+const viewingOrphanTask = ref<OrphanTask | null>(null)
+
+function viewOrphanTask(task: OrphanTask) {
+  viewingOrphanTask.value = task
+}
+
+function closeOrphanViewer() {
+  viewingOrphanTask.value = null
+}
+
+/**
+ * 删除孤立任务
+ */
+async function deleteOrphanTask(task: OrphanTask) {
+  if (!confirm(`确定要删除这个孤立任务吗？\n\n任务ID: ${task.task_id}\n图片数量: ${task.images_count} 张\n\n此操作将永久删除磁盘上的图片文件！`)) {
+    return
+  }
+
+  try {
+    const response = await fetch(`/api/history/orphan/${task.task_id}`, {
+      method: 'DELETE'
+    })
+    const result = await response.json()
+
+    if (result.success) {
+      orphanTasks.value = orphanTasks.value.filter(t => t.task_id !== task.task_id)
+      alert('孤立任务已删除')
+    } else {
+      alert('删除失败: ' + (result.error || '未知错误'))
+    }
+  } catch (e) {
+    console.error('删除孤立任务失败:', e)
+    alert('删除失败: ' + String(e))
+  }
+}
+
 onMounted(async () => {
   await loadData()
   await loadStats()
@@ -454,9 +593,20 @@ onMounted(async () => {
   // 自动执行一次扫描（静默，不显示结果）
   try {
     const result = await scanAllTasks()
-    if (result.success && (result.synced || 0) > 0) {
-      await loadData()
-      await loadStats()
+    if (result.success) {
+      // 提取孤立任务信息
+      if (result.results) {
+        const orphans = result.results.filter((r: any) => r.no_record && r.images_count > 0)
+        orphanTasks.value = orphans.map((r: any) => ({
+          task_id: r.task_id,
+          images_count: r.images_count,
+          images: r.images || []
+        }))
+      }
+      if ((result.synced || 0) > 0) {
+        await loadData()
+        await loadStats()
+      }
     }
   } catch (e) {
     console.error('自动扫描失败:', e)
@@ -567,5 +717,240 @@ onMounted(async () => {
 .empty-state-large .empty-tips {
   margin-top: 10px;
   color: var(--text-placeholder);
+}
+
+/* Orphan Tasks Styles */
+.orphan-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.orphan-badge {
+  background: #ff4d4f;
+  color: white;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.orphan-tasks-container {
+  padding: 0;
+}
+
+.orphan-header {
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 24px;
+}
+
+.orphan-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #d46b08;
+  font-size: 14px;
+}
+
+.orphan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.orphan-card {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+  transition: all 0.2s;
+}
+
+.orphan-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
+}
+
+.orphan-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #fafafa;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.orphan-task-id {
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--text-sub);
+}
+
+.orphan-image-count {
+  font-size: 12px;
+  color: var(--text-placeholder);
+}
+
+.orphan-images-preview {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 8px;
+  min-height: 80px;
+}
+
+.orphan-thumb {
+  width: 100%;
+  aspect-ratio: 9/16;
+  object-fit: cover;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.orphan-thumb:hover {
+  opacity: 0.8;
+}
+
+.orphan-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f5f5;
+  border-radius: 4px;
+  color: var(--text-sub);
+  font-size: 12px;
+}
+
+.orphan-card-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-danger {
+  background: #fff1f0;
+  color: #ff4d4f;
+  border: 1px solid #ffccc7;
+}
+
+.btn-danger:hover {
+  background: #ff4d4f;
+  color: white;
+}
+
+/* Orphan Viewer Modal */
+.orphan-viewer-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.orphan-viewer-modal {
+  background: white;
+  border-radius: 16px;
+  max-width: 1200px;
+  width: 100%;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.orphan-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.orphan-viewer-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.orphan-viewer-id {
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--text-sub);
+  background: #f5f5f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.orphan-viewer-header .close-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-sub);
+  padding: 4px;
+}
+
+.orphan-viewer-header .close-btn:hover {
+  color: var(--text-main);
+}
+
+.orphan-viewer-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.orphan-viewer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.orphan-viewer-item {
+  background: #fafafa;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.orphan-viewer-item img {
+  width: 100%;
+  aspect-ratio: 9/16;
+  object-fit: cover;
+}
+
+.orphan-viewer-item-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-sub);
+}
+
+.download-link {
+  color: var(--text-sub);
+  transition: color 0.2s;
+}
+
+.download-link:hover {
+  color: var(--primary);
 }
 </style>
